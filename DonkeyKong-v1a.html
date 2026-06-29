@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Donkey Kong</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+background: #000;
+display: flex;
+justify-content: center;
+align-items: center;
+height: 100vh;
+overflow: hidden;
+font-family: 'Courier New', monospace;
+}
+canvas {
+border: 3px solid #444;
+image-rendering: pixelated;
+}
+#ui {
+position: absolute;
+top: 10px;
+left: 50%;
+transform: translateX(-50%);
+color: #fff;
+font-size: 14px;
+text-align: center;
+pointer-events: none;
+}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// Game dimensions
+const W = 512;
+const H = 580;
+canvas.width = W;
+canvas.height = H;
+
+// Colors
+const COLORS = {
+    red: '#ff0000',
+    blue: '#0000ff',
+    yellow: '#ffff00',
+    white: '#ffffff',
+    brown: '#8B4513',
+    darkBrown: '#654321',
+    pink: '#FF69B4',
+    green: '#00aa00',
+    orange: '#ff8800',
+    skin: '#ffcc99',
+    dkSkin: '#c47a3a',
+    dkFur: '#5a2d0c'
+};
+
+// Game state
+let gameState = 'title'; // title, playing, gameover, win
+let score = 0;
+let lives = 3;
+let level = 1;
+let frameCount = 0;
+let barrelTimer = 0;
+let barrelInterval = 90;
+let shakeTimer = 0;
+let flashTimer = 0;
+
+// Keys
+const keys = {};
+window.addEventListener('keydown', e => {
+    keys[e.code] = true;
+    if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) {
+        e.preventDefault();
+    }
+    if (gameState === 'title' && e.code === 'Enter') {
+        startGame();
+    }
+    if ((gameState === 'gameover' || gameState === 'win') && e.code === 'Enter') {
+        gameState = 'title';
+    }
+});
+window.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// Platforms - each has x, y, width, and direction barrels roll
+const platforms = [
+    { x: 0, y: H - 40, w: W, dir: 1 },           // Ground floor
+    { x: 40, y: H - 140, w: W - 60, dir: -1 },   // Floor 2 (left to right reversed)
+    { x: 0, y: H - 240, w: W - 60, dir: 1 },     // Floor 3
+    { x: 40, y: H - 340, w: W - 60, dir: -1 },   // Floor 4
+    { x: 0, y: H - 440, w: W - 60, dir: 1 },     // Floor 5
+    { x: 40, y: H - 520, w: 280, dir: -1 },      // Top floor (DK's platform)
+];
+
+// Ladders
+const ladders = [
+    { x: 420, y: H - 140, h: 100 },   // Ground to Floor 2
+    { x: 80, y: H - 240, h: 100 },    // Floor 2 to Floor 3
+    { x: 380, y: H - 340, h: 100 },   // Floor 3 to Floor 4
+    { x: 100, y: H - 440, h: 100 },   // Floor 4 to Floor 5
+    { x: 260, y: H - 520, h: 80 },    // Floor 5 to Top (princess ladder)
+];
+
+// Player
+let player = {};
+function resetPlayer() {
+    player = {
+        x: 40, y: H - 40 - 24,
+        w: 16, h: 24,
+        vx: 0, vy: 0,
+        speed: 2.5,
+        jumpForce: -6.5,
+        gravity: 0.35,
+        onGround: false,
+        climbing: false,
+        facing: 1,
+        frame: 0,
+        frameTimer: 0,
+        invincible: 0,
+        hammer: false,
+        hammerTimer: 0,
+    };
+}
+
+// Donkey Kong
+const dk = { x: 50, y: H - 520 - 48, w: 48, h: 48, frame: 0, throwAnim: 0 };
+
+// Princess
+const princess = { x: 260 + 8, y: H - 520 - 32, w: 16, h: 32 };
+
+// Barrels
+let barrels = [];
+
+// Hammer pickups
+let hammerPickups = [];
+function spawnHammers() {
+    hammerPickups = [
+        { x: 200, y: H - 140 - 16, collected: false },
+        { x: 350, y: H - 340 - 16, collected: false },
+    ];
+}
+
+// Particles
+let particles = [];
+
+function startGame() {
+    gameState = 'playing';
+    score = 0;
+    lives = 3;
+    level = 1;
+    barrels = [];
+    particles = [];
+    barrelTimer = 0;
+    resetPlayer();
+    spawnHammers();
+}
+
+function respawnPlayer() {
+    player.x = 40;
+    player.y = H - 40 - 24;
+    player.vx = 0;
+    player.vy = 0;
+    player.climbing = false;
+    player.invincible = 120;
+}
+
+// Collision helpers
+function rectCollide(a, b) {
+    return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function spawnBarrel() {
+    barrels.push({
+        x: dk.x + 20, y: dk.y + 40,
+        w: 14, h: 12,
+        vx: 2.5 * platforms[5].dir,
+        vy: 0,
+        onGround: false,
+        rolling: true,
+        gravity: 0.3,
+    });
+}
+
+function spawnParticles(x, y, color, count) {
+    for (let i = 0; i < count; i++) {
+        particles.push({
+            x, y,
+            vx: (Math.random() - 0.5) * 4,
+            vy: (Math.random() - 0.5) * 4 - 2,
+            life: 30 + Math.random() * 20,
+            color,
+            size: 2 + Math.random() * 3,
+        });
+    }
+}
+
+// Update player
+function updatePlayer() {
+    if (player.invincible > 0) player.invincible--;
+
+    // Hammer timer
+    if (player.hammer) {
+        player.hammerTimer--;
+        if (player.hammerTimer <= 0) player.hammer = false;
+    }
+
+    // Check ladder proximity
+    let onLadder = false;
+    for (let lad of ladders) {
+        if (Math.abs((player.x + player.w/2) - (lad.x + 8)) < 16 &&
+            player.y + player.h > lad.y && player.y < lad.y + lad.h) {
+            onLadder = true;
+            break;
+        }
+    }
+
+    // Climbing
+    if (onLadder && !player.climbing) {
+        if (keys['ArrowUp'] || keys['ArrowDown']) {
+            player.climbing = true;
+            player.vy = 0;
+            player.vx = 0;
+        }
+    }
+
+    if (player.climbing) {
+        let climbSpeed = 2;
+        if (keys['ArrowUp']) player.y -= climbSpeed;
+        if (keys['ArrowDown']) player.y += climbSpeed;
+
+        // Snap to ladder x
+        for (let lad of ladders) {
+            if (Math.abs((player.x + player.w/2) - (lad.x + 8)) < 16 &&
+                player.y + player.h > lad.y && player.y < lad.y + lad.h) {
+                player.x = lad.x + 8 - player.w / 2;
+            }
+        }
+
+        // Check if still on ladder
+        let stillOnLadder = false;
+        for (let lad of ladders) {
+            if (Math.abs((player.x + player.w/2) - (lad.x + 8)) < 16 &&
+                player.y + player.h > lad.y && player.y < lad.y + lad.h) {
+                stillOnLadder = true;
+            }
+        }
+        if (!stillOnLadder || (keys['ArrowLeft'] || keys['ArrowRight'])) {
+            player.climbing = false;
+        }
+
+        player.frameTimer++;
+        if (player.frameTimer > 12) { player.frame = (player.frame + 1) % 2; player.frameTimer = 0; }
+    } else {
+        // Horizontal movement
+        let moveX = 0;
+        if (keys['ArrowLeft']) { moveX = -1; player.facing = -1; }
+        if (keys['ArrowRight']) { moveX = 1; player.facing = 1; }
+
+        player.vx = moveX * player.speed;
+        player.x += player.vx;
+
+        // Gravity
+        player.vy += player.gravity;
+        player.y += player.vy;
+
+        // Platform collision
+        player.onGround = false;
+        for (let plat of platforms) {
+            if (player.x + player.w > plat.x && player.x < plat.x + plat.w) {
+                if (player.y + player.h >= plat.y && player.y + player.h <= plat.y + 12 && player.vy >= 0) {
+                    player.y = plat.y - player.h;
+                    player.vy = 0;
+                    player.onGround = true;
+                }
+            }
+        }
+
+        // Jumping
+        if (keys['Space'] || keys['ArrowUp']) {
+            if (player.onGround && !player.climbing) {
+                player.vy = player.jumpForce;
+                player.onGround = false;
+            }
+        }
+
+        // Animation
+        if (moveX !== 0) {
+            player.frameTimer++;
+            if (player.frameTimer > 8) { player.frame = (player.frame + 1) % 4; player.frameTimer = 0; }
+        } else {
+            player.frame = 0;
+        }
+
+        // Boundaries
+        if (player.x < 0) player.x = 0;
+        if (player.x + player.w > W) player.x = W - player.w;
+    }
+
+    // Fall off screen
+    if (player.y > H + 20) {
+        loseLife();
+    }
+
+    // Check hammer pickup
+    for (let h of hammerPickups) {
+        if (!h.collected && rectCollide(player, { x: h.x - 8, y: h.y - 16, w: 16, h: 16 })) {
+            h.collected = true;
+            player.hammer = true;
+            player.hammerTimer = 300;
+            score += 50;
+            spawnParticles(h.x, h.y, COLORS.yellow, 8);
+        }
+    }
+
+    // Check princess (win)
+    if (rectCollide(player, { x: princess.x - 4, y: princess.y - 4, w: princess.w + 8, h: princess.h + 8 })) {
+        gameState = 'win';
+        score += 1000;
+        spawnParticles(princess.x, princess.y, COLORS.pink, 30);
+    }
+}
+
+function loseLife() {
+    lives--;
+    shakeTimer = 20;
+    if (lives <= 0) {
+        gameState = 'gameover';
+    } else {
+        respawnPlayer();
+    }
+}
+
+// Update barrels
+function updateBarrels() {
+    barrelTimer++;
+    if (barrelTimer >= barrelInterval && barrels.length < 12) {
+        spawnBarrel();
+        barrelTimer = 0;
+        dk.throwAnim = 15;
+    }
+
+    for (let i = barrels.length - 1; i >= 0; i--) {
+        let b = barrels[i];
+
+        // Gravity
+        b.vy += b.gravity;
+        b.x += b.vx;
+        b.y += b.vy * 3;
+
+        // Platform collision
+        b.onGround = false;
+        for (let plat of platforms) {
+            if (b.x + b.w > plat.x && b.x < plat.x + plat.w) {
+                if (b.y + b.h >= plat.y && b.y + b.h <= plat.y + 10 && b.vy >= 0) {
+                    b.y = plat.y - b.h;
+                    b.vy = 0;
+                    b.onGround = true;
+                    b.vx = 2.5 * plat.dir;
+
+                    // Random chance to fall down at platform edges
+                    if (b.x <= plat.x + 4 || b.x + b.w >= plat.x + plat.w - 4) {
+                        if (Math.random() < 0.03) {
+                            b.vy = 1;
+                            b.onGround = false;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Remove if off screen
+        if (b.y > H + 20 || b.x < -20 || b.x > W + 20) {
+            barrels.splice(i, 1);
+            score += 10;
+            continue;
+        }
+
+        // Player collision
+        if (player.invincible <= 0 && rectCollide(player, b)) {
+            if (player.hammer) {
+                // Smash barrel!
+                spawnParticles(b.x + b.w/2, b.y + b.h/2, COLORS.orange, 12);
+                score += 300;
+                barrels.splice(i, 1);
+                continue;
+            } else {
+                loseLife();
+                if (gameState === 'playing') {
+                    spawnParticles(player.x + player.w/2, player.y + player.h/2, COLORS.red, 15);
+                }
+            }
+        }
+    }
+
+    // DK throw animation
+    if (dk.throwAnim > 0) dk.throwAnim--;
+}
+
+// Update particles
+function updateParticles() {
+    for (let i = particles.length - 1; i >= 0; i--) {
+        let p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.1;
+        p.life--;
+        if (p.life <= 0) particles.splice(i, 1);
+    }
+}
+
+// Drawing functions
+function drawPixelRect(x, y, w, h, color) {
+    ctx.fillStyle = color;
+    ctx.fillRect(Math.floor(x), Math.floor(y), w, h);
+}
+
+function drawPlayer() {
+    if (player.invincible > 0 && Math.floor(player.invincible / 4) % 2 === 0) return;
+
+    let px = Math.floor(player.x);
+    let py = Math.floor(player.y);
+    let f = player.facing;
+
+    ctx.save();
+    if (f === -1) {
+        ctx.translate(px + player.w, py);
+        ctx.scale(-1, 1);
+        px = 0; py = 0;
+    }
+
+    // Body (red overalls)
+    drawPixelRect(px + 3, py + 8, 10, 10, COLORS.red);
+
+    // Head (skin color)
+    drawPixelRect(px + 4, py, 8, 8, COLORS.skin);
+
+    // Hat (red)
+    drawPixelRect(px + 2, py - 1, 12, 4, COLORS.red);
+    drawPixelRect(px + 6, py - 3, 8, 3, COLORS.red);
+
+    // Eyes
+    drawPixelRect(px + 9, py + 2, 2, 2, '#000');
+
+    // Mustache
+    drawPixelRect(px + 7, py + 5, 6, 2, '#4a2800');
+
+    // Legs
+    if (player.climbing) {
+        let legOffset = player.frame === 0 ? -3 : 3;
+        drawPixelRect(px + 3, py + 18, 4, 6, COLORS.red);
+        drawPixelRect(px + 9, py + 18, 4, 6, COLORS.red);
+    } else if (!player.onGround) {
+        // Jumping pose
+        drawPixelRect(px + 2, py + 17, 5, 5, COLORS.red);
+        drawPixelRect(px + 9, py + 17, 5, 5, COLORS.red);
+    } else if (player.frame % 2 === 0) {
+        drawPixelRect(px + 3, py + 18, 4, 6, COLORS.blue);
+        drawPixelRect(px + 9, py + 18, 4, 6, COLORS.blue);
+    } else {
+        drawPixelRect(px + 2, py + 18, 5, 5, COLORS.blue);
+        drawPixelRect(px + 9, py + 18, 5, 5, COLORS.blue);
+    }
+
+    // Shoes (brown)
+    if (!player.onGround) {
+        drawPixelRect(px + 2, py + 21, 5, 3, '#654321');
+        drawPixelRect(px + 9, py + 21, 5, 3, '#654321');
+    }
+
+    // Hammer
+    if (player.hammer) {
+        let hammerY = player.frame % 2 === 0 ? py - 8 : py + 4;
+        drawPixelRect(px + 12, hammerY, 3, 10, '#8B4513');
+        drawPixelRect(px + 10, hammerY - 2, 7, 6, '#aaa');
+    }
+
+    ctx.restore();
+}
+
+function drawDK() {
+    let dx = dk.x;
+    let dy = dk.y;
+
+    // Body (brown fur)
+    drawPixelRect(dx + 8, dy + 12, 32, 24, COLORS.dkFur);
+
+    // Chest (lighter brown)
+    drawPixelRect(dx + 14, dy + 16, 20, 14, '#7a4a2a');
+
+    // Head
+    drawPixelRect(dx + 10, dy, 28, 16, COLORS.dkFur);
+
+    // Face
+    drawPixelRect(dx + 14, dy + 4, 20, 10, '#c47a3a');
+
+    // Eyes
+    drawPixelRect(dx + 16, dy + 5, 4, 4, '#fff');
+    drawPixelRect(dx + 28, dy + 5, 4, 4, '#fff');
+    drawPixelRect(dx + 17, dy + 6, 3, 3, '#000');
+    drawPixelRect(dx + 29, dy + 6, 3, 3, '#000');
+
+    // Mouth
+    if (dk.throwAnim > 5) {
+        drawPixelRect(dx + 18, dy + 10, 12, 4, '#000');
+    } else {
+        drawPixelRect(dx + 20, dy + 11, 8, 2, '#000');
+    }
+
+    // Arms
+    if (dk.throwAnim > 5) {
+        // Throwing pose
+        drawPixelRect(dx + 36, dy + 14, 12, 6, COLORS.dkFur);
+        drawPixelRect(dx - 2, dy + 18, 10, 6, COLORS.dkFur);
+    } else {
+        drawPixelRect(dx + 2, dy + 16, 8, 14, COLORS.dkFur);
+        drawPixelRect(dx + 38, dy + 16, 8, 14, COLORS.dkFur);
+    }
+
+    // Hands
+    drawPixelRect(dx, dy + 28, 6, 5, '#c47a3a');
+    drawPixelRect(dx + 42, dy + 28, 6, 5, '#c47a3a');
+
+    // Legs
+    drawPixelRect(dx + 10, dy + 36, 10, 12, COLORS.dkFur);
+    drawPixelRect(dx + 28, dy + 36, 10, 12, COLORS.dkFur);
+
+    // Feet
+    drawPixelRect(dx + 8, dy + 44, 14, 5, '#c47a3a');
+    drawPixelRect(dx + 26, dy + 44, 14, 5, '#c47a3a');
+
+    // Tie (red)
+    drawPixelRect(dx + 20, dy + 18, 8, 10, COLORS.red);
+}
+
+function drawPrincess() {
+    let px = princess.x;
+    let py = princess.y;
+
+    // Dress (pink)
+    drawPixelRect(px - 2, py + 8, 20, 24, COLORS.pink);
+
+    // Head
+    drawPixelRect(px + 2, py, 12, 10, COLORS.skin);
+
+    // Hair (blonde)
+    drawPixelRect(px, py - 2, 16, 6, '#ffdd44');
+    drawPixelRect(px - 2, py, 4, 8, '#ffdd44');
+    drawPixelRect(px + 14, py, 4, 8, '#ffdd44');
+
+    // Eyes
+    drawPixelRect(px + 5, py + 3, 2, 2, '#000');
+    drawPixelRect(px + 9, py + 3, 2, 2, '#000');
+
+    // Crown
+    drawPixelRect(px + 3, py - 4, 10, 4, COLORS.yellow);
+    drawPixelRect(px + 4, py - 6, 2, 3, COLORS.red);
+    drawPixelRect(px + 7, py - 6, 2, 3, '#00aaff');
+    drawPixelRect(px + 10, py - 6, 2, 3, COLORS.green);
+
+    // "HELP!" text
+    if (Math.floor(frameCount / 30) % 2 === 0) {
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 8px monospace';
+        ctx.fillText('HELP!', px - 4, py - 10);
+    }
+
+    // Box around princess
+    ctx.strokeStyle = COLORS.yellow;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(px - 6, py - 4, 28, 36);
+}
+
+function drawBarrel(b) {
+    let bx = Math.floor(b.x);
+    let by = Math.floor(b.y);
+
+    // Barrel body (brown)
+    drawPixelRect(bx + 1, by + 1, b.w - 2, b.h - 2, '#8B4513');
+    drawPixelRect(bx, by, b.w, 2, '#654321');
+    drawPixelRect(bx, by + b.h - 2, b.w, 2, '#654321');
+
+    // Barrel bands
+    drawPixelRect(bx, by + 3, b.w, 2, '#aa7744');
+    drawPixelRect(bx, by + b.h - 5, b.w, 2, '#aa7744');
+
+    // Highlight
+    drawPixelRect(bx + 2, by + 2, 3, b.h - 4, '#a0622e');
+}
+
+function drawPlatforms() {
+    for (let plat of platforms) {
+        // Girder-style platforms
+        let pattern = [];
+        for (let x = plat.x; x < plat.x + plat.w; x += 16) {
+            ctx.fillStyle = '#cc2200';
+            ctx.fillRect(x, plat.y, 8, 4);
+            ctx.fillStyle = '#ff4400';
+            ctx.fillRect(x + 8, plat.y, 8, 4);
+        }
+        // Bottom line
+        ctx.fillStyle = '#aa1100';
+        ctx.fillRect(plat.x, plat.y + 4, plat.w, 2);
+
+        // Rivets
+        for (let x = plat.x + 4; x < plat.x + plat.w; x += 32) {
+            drawPixelRect(x, plat.y + 1, 3, 3, '#ffcc00');
+        }
+    }
+}
+
+function drawLadders() {
+    for (let lad of ladders) {
+        // Side rails
+        ctx.fillStyle = '#44aaff';
+        ctx.fillRect(lad.x, lad.y, 3, lad.h);
+        ctx.fillRect(lad.x + 13, lad.y, 3, lad.h);
+
+        // Rungs
+        for (let y = lad.y; y < lad.y + lad.h; y += 8) {
+            ctx.fillStyle = '#44aaff';
+            ctx.fillRect(lad.x + 3, y, 10, 2);
+        }
+    }
+}
+
+function drawHammers() {
+    for (let h of hammerPickups) {
+        if (h.collected) continue;
+        let hx = h.x - 4;
+        let hy = h.y - 8;
+
+        // Handle
+        drawPixelRect(hx + 3, hy + 2, 2, 10, '#8B4513');
+        // Head
+        drawPixelRect(hx, hy, 8, 5, '#aaa');
+        // Sparkle
+        if (Math.floor(frameCount / 10) % 2 === 0) {
+            drawPixelRect(hx - 2, hy - 2, 2, 2, COLORS.yellow);
+            drawPixelRect(hx + 8, hy + 4, 2, 2, COLORS.yellow);
+        }
+    }
+}
+
+function drawParticles() {
+    for (let p of particles) {
+        ctx.globalAlpha = p.life / 50;
+        drawPixelRect(p.x, p.y, p.size, p.size, p.color);
+    }
+    ctx.globalAlpha = 1;
+}
+
+function drawHUD() {
+    // Score
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 16px monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(`SCORE: ${score}`, 10, 24);
+
+    // Lives
+    ctx.textAlign = 'right';
+    ctx.fillText('LIVES:', W - 80, 24);
+    for (let i = 0; i < lives; i++) {
+        drawPixelRect(W - 70 + i * 16, 14, 10, 14, COLORS.red);
+        drawPixelRect(W - 72 + i * 16, 12, 14, 4, COLORS.red);
+    }
+
+    // Level
+    ctx.textAlign = 'center';
+    ctx.fillText(`LEVEL ${level}`, W / 2, 24);
+
+    // Hammer indicator
+    if (player.hammer) {
+        ctx.fillStyle = COLORS.yellow;
+        ctx.font = 'bold 12px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText(`HAMMER: ${Math.ceil(player.hammerTimer / 60)}s`, 10, 44);
+    }
+}
+
+function drawTitleScreen() {
+    // Background
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+
+    // Title
+    ctx.textAlign = 'center';
+
+    // Donkey Kong title with shadow
+    ctx.fillStyle = '#cc2200';
+    ctx.font = 'bold 48px monospace';
+    ctx.fillText('DONKEY', W/2 + 3, H/2 - 60);
+    ctx.fillStyle = '#ff4400';
+    ctx.fillText('DONKEY', W/2, H/2 - 63);
+
+    ctx.fillStyle = '#cc2200';
+    ctx.font = 'bold 56px monospace';
+    ctx.fillText('KONG', W/2 + 3, H/2 + 10);
+    ctx.fillStyle = '#ff4400';
+    ctx.fillText('KONG', W/2, H/2 + 7);
+
+    // Subtitle
+    ctx.fillStyle = COLORS.yellow;
+    ctx.font = 'bold 16px monospace';
+    ctx.fillText('~ HTML EDITION ~', W/2, H/2 + 45);
+
+    // Controls
+    ctx.fillStyle = '#aaa';
+    ctx.font = '13px monospace';
+    let cy = H/2 + 90;
+    ctx.fillText('← → MOVE    SPACE JUMP', W/2, cy);
+    ctx.fillText('↑ ↓ CLIMB LADDERS', W/2, cy + 20);
+
+    // Start prompt
+    if (Math.floor(frameCount / 30) % 2 === 0) {
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 18px monospace';
+        ctx.fillText('PRESS ENTER TO START', W/2, cy + 70);
+    }
+
+    // Draw mini DK
+    let mdkx = W/2 - 30;
+    let mdky = H/2 - 140;
+    drawPixelRect(mdkx + 8, mdky + 12, 32, 24, COLORS.dkFur);
+    drawPixelRect(mdkx + 14, mdky + 16, 20, 14, '#7a4a2a');
+    drawPixelRect(mdkx + 10, mdky, 28, 16, COLORS.dkFur);
+    drawPixelRect(mdkx + 14, mdky + 4, 20, 10, '#c47a3a');
+    drawPixelRect(mdkx + 16, mdky + 5, 4, 4, '#fff');
+    drawPixelRect(mdkx + 28, mdky + 5, 4, 4, '#fff');
+    drawPixelRect(mdkx + 17, mdky + 6, 3, 3, '#000');
+    drawPixelRect(mdkx + 29, mdky + 6, 3, 3, '#000');
+    drawPixelRect(mdkx + 20, mdky + 18, 8, 10, COLORS.red);
+
+    // Decorative barrels
+    for (let i = 0; i < 5; i++) {
+        let bx = 60 + i * 90;
+        let by = H - 30;
+        drawPixelRect(bx + 1, by + 1, 12, 10, '#8B4513');
+        drawPixelRect(bx, by, 14, 2, '#654321');
+        drawPixelRect(bx, by + 8, 14, 2, '#654321');
+    }
+}
+
+function drawGameOver() {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = COLORS.red;
+    ctx.font = 'bold 48px monospace';
+    ctx.fillText('GAME OVER', W/2, H/2 - 30);
+
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 20px monospace';
+    ctx.fillText(`FINAL SCORE: ${score}`, W/2, H/2 + 20);
+
+    if (Math.floor(frameCount / 30) % 2 === 0) {
+        ctx.fillStyle = COLORS.yellow;
+        ctx.font = '16px monospace';
+        ctx.fillText('PRESS ENTER TO CONTINUE', W/2, H/2 + 70);
+    }
+}
+
+function drawWinScreen() {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = COLORS.pink;
+    ctx.font = 'bold 40px monospace';
+    ctx.fillText('YOU WIN!', W/2, H/2 - 50);
+
+    ctx.fillStyle = COLORS.yellow;
+    ctx.font = 'bold 24px monospace';
+    ctx.fillText(`SCORE: ${score}`, W/2, H/2 + 10);
+
+    // Hearts animation
+    for (let i = 0; i < 8; i++) {
+        let hx = 50 + Math.sin(frameCount * 0.05 + i) * 30 + i * 60;
+        let hy = H/2 + 50 + Math.cos(frameCount * 0.07 + i) * 15;
+        ctx.fillStyle = COLORS.red;
+        ctx.font = '20px monospace';
+        ctx.fillText('♥', hx, hy);
+    }
+
+    if (Math.floor(frameCount / 30) % 2 === 0) {
+        ctx.fillStyle = '#fff';
+        ctx.font = '16px monospace';
+        ctx.fillText('PRESS ENTER TO CONTINUE', W/2, H/2 + 90);
+    }
+}
+
+// Main game loop
+function update() {
+    frameCount++;
+
+    if (gameState === 'playing') {
+        updatePlayer();
+        updateBarrels();
+        updateParticles();
+
+        // Increase difficulty over time
+        if (frameCount % 600 === 0 && barrelInterval > 40) {
+            barrelInterval -= 5;
+        }
+    } else {
+        updateParticles();
+    }
+
+    if (shakeTimer > 0) shakeTimer--;
+}
+
+function draw() {
+    ctx.save();
+
+    // Screen shake
+    if (shakeTimer > 0) {
+        ctx.translate(
+            (Math.random() - 0.5) * shakeTimer,
+            (Math.random() - 0.5) * shakeTimer
+        );
+    }
+
+    // Clear
+    ctx.fillStyle = '#000';
+    ctx.fillRect(-10, -10, W + 20, H + 20);
+
+    if (gameState === 'title') {
+        drawTitleScreen();
+    } else {
+        // Draw game elements
+        drawPlatforms();
+        drawLadders();
+        drawHammers();
+        drawDK();
+        drawPrincess();
+
+        for (let b of barrels) drawBarrel(b);
+
+        if (gameState === 'playing') drawPlayer();
+
+        drawParticles();
+        drawHUD();
+
+        if (gameState === 'gameover') drawGameOver();
+        if (gameState === 'win') drawWinScreen();
+    }
+
+    ctx.restore();
+}
+
+function gameLoop() {
+    update();
+    draw();
+    requestAnimationFrame(gameLoop);
+}
+
+// Start
+resetPlayer();
+spawnHammers();
+gameLoop();
+</script>
+</body>
+</html>

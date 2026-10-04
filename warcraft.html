@@ -1,0 +1,2897 @@
+ <!DOCTYPE html>
+ <html lang="en">
+ <head>
+ <meta charset="utf-8">
+ <title>Warcraft-Style RTS — Single File</title>
+ <!--
+   A complete, dependency-free, single-file HTML5/JS RTS inspired by
+   Warcraft: Orcs & Humans.
+
+   Controls:
+     Left-click ......... select a unit / building
+     Left-click drag .... box-select multiple units / buildings
+     Right-click ........ move (ground), attack (enemy), gather (gold mine)
+     Space .............. select all units
+     Esc ................ cancel building placement
+     Minimap click ...... issue command at that spot
+ -->
+ <style>
+   html,body{margin:0;padding:0;background:#0d1117;color:#d8e0e8;font-family:'Courier New',monospace;}
+   #wrap{display:flex;gap:10px;padding:12px;max-width:1100px;margin:0 auto;align-items:flex-start;}
+   #stage{position:relative;}
+   canvas{display:block;background:#000;border:2px solid #2a3340;cursor:crosshair;}
+   #overlay{position:absolute;inset:0;background:rgba(5,8,12,0.85);display:flex;flex-direction:column;
+            align-items:center;justify-content:center;gap:14px;border:2px solid #2a3340;}
+   #overlay.hidden{display:none;}
+   #overlay-text{font-size:20px;font-weight:bold;letter-spacing:2px;text-align:center;padding:0 12px;}
+   #panel{width:252px;background:#161c24;border:2px solid #2a3340;padding:12px;display:flex;flex-direction:column;gap:10px;}
+   h1{font-size:15px;margin:0 0 2px;letter-spacing:1px;color:#e8e4d8;}
+   .legend{font-size:11px;color:#9aa7b5;}
+   .legend .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin:0 3px 0 0;vertical-align:-1px;}
+   .stat{font-size:14px;}
+   .stat b{color:#ffe14a;}
+   #actions{display:flex;flex-direction:column;gap:6px;min-height:130px;}
+   #actions button{font-family:inherit;font-size:13px;padding:6px 8px;background:#232c38;color:#e6edf3;
+                    border:1px solid #3a4656;cursor:pointer;text-align:left;}
+   #actions button:hover:not(:disabled){background:#2e3a4a;}
+   #actions button:disabled{opacity:0.45;cursor:default;}
+   .hint{font-size:12px;color:#9aa7b5;line-height:1.35;}
+   #status{font-size:12px;color:#b8c4d0;min-height:18px;}
+   #selinfo{font-size:12px;color:#cdd6de;min-height:18px;}
+   #controls{font-size:11px;color:#8894a2;line-height:1.5;}
+   #restart{font-family:inherit;padding:6px;background:#232c38;color:#e6edf3;border:1px solid #3a4656;cursor:pointer;}
+   #minimap{display:block;margin:4px auto 2px;background:#000;border:1px solid #2a3340;cursor:crosshair;}
+   #savectl{display:flex;gap:6px;align-items:center;}
+   #savectl button,#soundbtn,#rollmap{font-family:inherit;font-size:12px;padding:4px 8px;background:#232c38;
+                     color:#e6edf3;border:1px solid #3a4656;cursor:pointer;}
+   #savemsg{font-size:11px;color:#9aa7b5;min-height:14px;display:block;}
+   #seedctl{display:flex;gap:6px;align-items:center;font-size:12px;color:#9aa7b5;}
+   #seedctl input{font-family:inherit;font-size:12px;padding:3px 4px;background:#0d1117;color:#e6edf3;
+                   border:1px solid #3a4656;width:64px;}
+   #godctl{display:flex;gap:4px;align-items:center;font-size:12px;color:#9aa7b5;
+           margin-top:4px;cursor:pointer;}
+ </style>
+ </head>
+ <body>
+ <div id="wrap">
+   <div id="stage">
+     <canvas id="game" width="800" height="600"></canvas>
+     <div id="overlay" class="hidden">
+       <div id="overlay-text"></div>
+       <button id="again">Play Again</button>
+     </div>
+   </div>
+   <div id="panel">
+     <h1>ORCS &amp; HUMANS</h1>
+     <div class="legend">
+       <span class="dot" style="background:#3f7fdd"></span>You&nbsp;&nbsp;
+       <span class="dot" style="background:#dd4f3f"></span>AI1&nbsp;&nbsp;
+       <span class="dot" style="background:#b44fd6"></span>AI2&nbsp;&nbsp;
+       <span class="dot" style="background:#3fbf9f"></span>AI3
+     </div>
+     <div class="legend" id="aistyles" title="Each AI base rolls a playstyle from the map seed (deterministic per seed)"></div>
+     <div class="stat">Gold: <b id="gold">0</b></div>
+     <div class="stat">Supply: <b id="supply">0/0</b></div>
+     <div class="stat" id="unitcounts">Army: &mdash;</div>
+     <div class="stat" id="enemyinfo">Enemy: &mdash;</div>
+     <canvas id="minimap" width="160" height="120" title="Strategic view — click to move the camera"></canvas>
+     <div id="actions"></div>
+     <div id="status"></div>
+     <div id="selinfo"></div>
+     <div id="controls">
+       L-click: select &middot; drag: multi-select<br>
+       Space: select all units<br>
+       R-click: move / attack / gather<br>
+       Minimap click: move camera there<br>
+       Arrows / WASD: pan camera<br>
+       Mouse to screen edge: auto-pan<br>
+       Esc: cancel placement<br>
+       god mode: reveal whole map (no fog)
+     </div>
+     <div id="savectl">
+       <button id="save">Save</button>
+       <button id="load">Load</button>
+       <button id="soundbtn">Sound: on</button>
+     </div>
+     <label id="godctl" title="Reveal the whole map (no fog). Visual only \u2014 does not affect gameplay, AI, or saves."><input type="checkbox" id="god"> god mode</label>
+     <span id="savemsg"></span>
+     <div id="seedctl">
+       Map seed: <input id="seed" type="text" placeholder="classic"
+         title="0 = classic map; any other number = generated map (same seed always gives the same map)">
+       <button id="rollmap" title="Pick a random seed and start a new game">Random</button>
+     </div>
+     <button id="restart">New Game</button>
+   </div>
+ </div>
+
+ <script>
+ "use strict";
+
+ /* ============================================================
+  * 1. CONSTANTS & UNIT / BUILDING DEFINITIONS
+  * ============================================================ */
+ // World map: 160x120 tiles (3200x2400 px). The canvas is only the viewport
+ // (VIEW_W x VIEW_H) and the camera (game.cam) pans it across the world.
+ const TILE = 20, COLS = 160, ROWS = 120, W = COLS * TILE, H = ROWS * TILE;
+ const VIEW_W = 800, VIEW_H = 600; // canvas viewport size (px)
+ const PAN_SPEED = 600;            // camera pan speed for arrow keys / WASD (px/s)
+ const UNIT_R = 7;                 // unit collision radius (px)
+ const SIGHT_RADIUS = 130;         // fog-of-war reveal radius (px)
+ const AGGRO_RADIUS = 90;          // units auto-engage enemies within this range
+ const MINE_CAPACITY = 1000;       // gold per mine
+ const CARRY_MAX = 10;             // gold a worker carries per trip
+ const CARRY_RATE = 8;             // gold/sec gathered at a mine
+ // A worker starts gathering when within PICKUP_RADIUS of the mine center and
+ // deposits gold when within DEPOSIT_RADIUS of the Town Center center. The TC
+ // is a 2x2 tile building, so its deposit radius must be larger than the
+ // 1-tile mine's pickup radius (36 covers the nearest walkable tile next to
+ // the TC, ~21px away; 15 keeps the worker standing on the mine tile).
+ const PICKUP_RADIUS = 15;
+ const DEPOSIT_RADIUS = 36;
+ const BASE_SUPPLY = 10;           // supply cap from the Town Center
+ const FARM_SUPPLY = 5;            // supply added per completed Farm
+ const MAX_FARMS = 4;              // max farms a faction may have
+ const AI_ATTACK_SIZE = 5;         // AI launches an attack wave at this army size
+const AI_CMD_INTERVAL = 0.4;      // how often the AI re-decides idle/moving unit orders
+const AI_SCAN_RADIUS = 240;       // local strength balance is judged within this radius
+const RETREAT_RADIUS = 140;       // do not retreat past the home Town Center
+
+// 4 factions, no alliances: 1 human + 3 independent AI bases, all hostile to each other
+const OWNERS = ['player', 'ai0', 'ai1', 'ai2'];
+const AI_OWNERS = OWNERS.slice(1);
+const AI_LABELS = { ai0: 'AI1', ai1: 'AI2', ai2: 'AI3' };
+
+// Playstyle each AI base can roll (deterministically from the map seed, so
+// the same seed always yields the same styles; a rolled seed re-rolls them).
+//  aggressive: attacks early, keeps one farm, early catapults
+//  defensive:  farms first, attacks only with a big edge, no catapults
+//  balanced:   the original default behaviour
+const AI_STYLES = {
+   aggressive: { atkSize: 4, atkPow: 1.0, engage: 210, engagePow: 0.8,  retreatAt: 0.6,  farmTarget: 1, armyCap: 7, buildScan: 380, catapults: [150, 3] },
+   balanced:   { atkSize: 5, atkPow: 1.3, engage: 170, engagePow: 0.95, retreatAt: 0.7,  farmTarget: 2, armyCap: 7, buildScan: 340, catapults: [300, 4] },
+   defensive:  { atkSize: 8, atkPow: 1.7, engage: 120, engagePow: 1.2,  retreatAt: 0.85, farmTarget: 3, armyCap: 9, buildScan: 260, catapults: null }
+};
+
+ const COLORS = {
+   player: '#3f7fdd', ai0: '#dd4f3f', ai1: '#b44fd6', ai2: '#3fbf9f',
+   grass: ['#47773a', '#4a7c3d', '#447237'],
+   tree: '#2e5427',
+   water: ['#31648f', '#346a97', '#2e5e86'], waterShore: '#5d93bd',
+   mountainBase: '#6d727a', mountainRock: '#565b63',
+   mountainLight: '#7d828b', mountainHi: '#9aa0a8',
+   mine: '#e8c34a', mineEmpty: '#8a8f94',
+   towncenter: '#8a6a3a', farm: '#5d9c4a', barracks: '#7a8398',
+   hpGood: '#3fd44a', hpMid: '#e8c34a', hpLow: '#d43f3f'
+ };
+
+ const UNIT_DEFS = {
+   worker:    { name: 'Worker',    cost: 70,  hp: 40,  speed: 70, range: 0,   dmg: 0,  interval: 0,   supply: 1, trainTime: 5,  proj: null },
+   swordsman: { name: 'Swordsman', cost: 40,  hp: 150, speed: 55, range: 26,  dmg: 14, interval: 1.0, supply: 1, trainTime: 6,  proj: null },
+   archer:    { name: 'Archer',    cost: 50,  hp: 90,  speed: 75, range: 120, dmg: 11, interval: 0.7, supply: 1, trainTime: 6,  proj: { speed:
+ 320, splash: 12, r: 2.5, color: '#cfd6dd' } },
+   catapult:  { name: 'Catapult',  cost: 150, hp: 110, speed: 32, range: 170, dmg: 40, interval: 3.0, supply: 2, trainTime: 10, proj: { speed:
+ 160, splash: 45, r: 4.5, color: '#555a63' } }
+ };
+
+ const BUILDING_DEFS = {
+   towncenter: { name: 'Town Center', cost: 0,   hp: 1000, buildTime: 0,  w: 2, h: 2 },
+   farm:       { name: 'Farm',        cost: 100, hp: 250,  buildTime: 8,  w: 1, h: 1 },
+   barracks:   { name: 'Barracks',    cost: 200, hp: 350,  buildTime: 12, w: 1, h: 1 }
+ };
+
+ let nextId = 1;
+
+ /* ============================================================
+  * 1b. PIXEL-ART SPRITES (stage 7, redrawn at 2x in stage 9) —
+  *     hand-drawn grids baked once to offscreen canvases at load.
+  *     '.' = transparent, 'f' = faction color. Units: 24x24 grids
+  *     (catapult 24x28) at scale 1 -> 24 px on screen; walk cycles
+  *     w0..w3 (w3 = w1 step), catapult w0..w1. Buildings: 20x20
+  *     grids; TC scale 2 -> 40 px, farm/barracks scale 1 -> 20 px
+  *     (same footprints as before).
+  * ============================================================ */
+ const FACTION_COLORS = { player: '#4a86e8', ai0: '#e05545', ai1: '#c958e8', ai2: '#33cfa5' };
+
+ const SPRITE_DEFS = {
+   worker: {
+     scale: 1,
+     palette: { H: '#5a3d24', s: '#e8c9a0', l: '#7a5c3a', d: '#4a4038', w: '#a8b0ba' },
+     frames: {
+       idle: [
+         "........................",
+         "........................",
+         ".........HHHHHH.........",
+         "........HHHHHHHH........",
+         "........ssssssss........",
+         "........sdssssds........",
+         "........ssssssss........",
+         "........llllllll........",
+         ".......llllllllll.......",
+         "......llllllllllll......",
+         ".....ll.llllllll.ll.....",
+         ".....ss.llllllll.ssw....",
+         "......dlllllllld...w....",
+         ".......dd......dd.www...",
+         ".......dd......dd.w.w...",
+         ".......dd......dd.w.w...",
+         ".......dd......dd.www...",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         "......ddd......ddd......",
+         "......ddd......ddd......",
+         "........................",
+         "........................"
+       ],
+       w0: [
+         "........................",
+         "........................",
+         ".........HHHHHH.........",
+         "........HHHHHHHH........",
+         "........ssssssss........",
+         "........sdssssds........",
+         "........ssssssss........",
+         "........llllllll........",
+         ".......llllllllll.......",
+         "......llllllllllll......",
+         ".....ll.llllllll.ll.....",
+         ".....ss.llllllll.ssw....",
+         "......dlllllllld...w....",
+         ".......dd......dd.www...",
+         ".......dd......dd.w.w...",
+         ".......dd......dd.w.w...",
+         ".......dd......dd.www...",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         "....ddd........ddd.....",
+         "....ddd........ddd.....",
+         "........................",
+         "........................"
+       ],
+       w1: [
+         "........................",
+         "........................",
+         ".........HHHHHH.........",
+         "........HHHHHHHH........",
+         "........ssssssss........",
+         "........sdssssds........",
+         "........ssssssss........",
+         "........llllllll........",
+         ".......llllllllll.......",
+         "......llllllllllll......",
+         ".....ll.llllllll.ll.....",
+         ".....ss.llllllll.ssw....",
+         "......dlllllllld...w....",
+         ".......dd......dd.www...",
+         ".......dd......dd.w.w...",
+         ".......dd......dd.w.w...",
+         ".......dd......dd.www...",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         "........................",
+         "........ddd.ddd.........",
+         "........ddd.ddd.........",
+         "........................",
+         "........................"
+       ],
+       w2: [
+         "........................",
+         "........................",
+         ".........HHHHHH.........",
+         "........HHHHHHHH........",
+         "........ssssssss........",
+         "........sdssssds........",
+         "........ssssssss........",
+         "........llllllll........",
+         ".......llllllllll.......",
+         "......llllllllllll......",
+         ".....ll.llllllll.ll.....",
+         ".....ss.llllllll.ssw....",
+         "......dlllllllld...w....",
+         ".......dd......dd.www...",
+         ".......dd......dd.w.w...",
+         ".......dd......dd.w.w...",
+         ".......dd......dd.www...",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......ddd.......ddd....",
+         ".......ddd.......ddd....",
+         "........................",
+         "........................"
+       ],
+       w3: [
+         "........................",
+         "........................",
+         ".........HHHHHH.........",
+         "........HHHHHHHH........",
+         "........ssssssss........",
+         "........sdssssds........",
+         "........ssssssss........",
+         "........llllllll........",
+         ".......llllllllll.......",
+         "......llllllllllll......",
+         ".....ll.llllllll.ll.....",
+         ".....ss.llllllll.ssw....",
+         "......dlllllllld...w....",
+         ".......dd......dd.www...",
+         ".......dd......dd.w.w...",
+         ".......dd......dd.w.w...",
+         ".......dd......dd.www...",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         "........................",
+         "........ddd.ddd.........",
+         "........ddd.ddd.........",
+         "........................",
+         "........................"
+       ],
+       atk: null
+     }
+   },
+   swordsman: {
+     scale: 1,
+     palette: { s: '#e8c9a0', d: '#4a4038', w: '#cfd6dd' },
+     frames: {
+       idle: [
+         "........................",
+         "........................",
+         ".........fffff.....w....",
+         "........fffffff....w....",
+         "........ssssss.....w....",
+         "........sdssds.....w....",
+         "........ssssss.....w....",
+         "........fffffff....w....",
+         ".......fffffff.....w....",
+         "......fffffffff....w....",
+         ".....f.fffffff.....w....",
+         ".....s.fffffff.....w....",
+         ".....s.fffffff..s.www...",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         "......ddd......ddd......",
+         "......ddd......ddd......",
+         "........................",
+         "........................",
+         "........................"
+       ],
+       w0: [
+         "........................",
+         "........................",
+         ".........fffff.....w....",
+         "........fffffff....w....",
+         "........ssssss.....w....",
+         "........sdssds.....w....",
+         "........ssssss.....w....",
+         "........fffffff....w....",
+         ".......fffffff.....w....",
+         "......fffffffff....w....",
+         ".....f.fffffff.....w....",
+         ".....s.fffffff.....w....",
+         ".....s.fffffff..s.www...",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         "......ddd......ddd......",
+         "....ddd........ddd......",
+         "....ddd........ddd......",
+         "........................",
+         "........................"
+       ],
+       w1: [
+         "........................",
+         "........................",
+         ".........fffff.....w....",
+         "........fffffff....w....",
+         "........ssssss.....w....",
+         "........sdssds.....w....",
+         "........ssssss.....w....",
+         "........fffffff....w....",
+         ".......fffffff.....w....",
+         "......fffffffff....w....",
+         ".....f.fffffff.....w....",
+         ".....s.fffffff.....w....",
+         ".....s.fffffff..s.www...",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         "........................",
+         "........ddd.ddd.........",
+         "........ddd.ddd.........",
+         "........................",
+         "........................"
+       ],
+       w2: [
+         "........................",
+         "........................",
+         ".........fffff.....w....",
+         "........fffffff....w....",
+         "........ssssss.....w....",
+         "........sdssds.....w....",
+         "........ssssss.....w....",
+         "........fffffff....w....",
+         ".......fffffff.....w....",
+         "......fffffffff....w....",
+         ".....f.fffffff.....w....",
+         ".....s.fffffff.....w....",
+         ".....s.fffffff..s.www...",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         "......ddd......ddd......",
+         ".......ddd.......ddd....",
+         ".......ddd.......ddd....",
+         "........................",
+         "........................"
+       ],
+       w3: [
+         "........................",
+         "........................",
+         ".........fffff.....w....",
+         "........fffffff....w....",
+         "........ssssss.....w....",
+         "........sdssds.....w....",
+         "........ssssss.....w....",
+         "........fffffff....w....",
+         ".......fffffff.....w....",
+         "......fffffffff....w....",
+         ".....f.fffffff.....w....",
+         ".....s.fffffff.....w....",
+         ".....s.fffffff..s.www...",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         "........................",
+         "........ddd.ddd.........",
+         "........ddd.ddd.........",
+         "........................",
+         "........................"
+       ],
+       atk: [
+         "........................",
+         "........................",
+         ".........fffff..........",
+         "........fffffff.........",
+         "........ssssss..........",
+         "........sdssds..........",
+         "........ssssss..........",
+         "........fffffff.........",
+         ".......fffffff...wwwwwww",
+         "......fffffffff..wwwwwww",
+         ".....f.fffffff...w......",
+         ".....s.fffffff..ss......",
+         ".....s.fffffff...w......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         "......ddd......ddd......",
+         "......ddd......ddd......",
+         "........................",
+         "........................",
+         "........................"
+       ]
+     }
+   },
+   archer: {
+     scale: 1,
+     palette: { H: '#5a3d24', s: '#e8c9a0', d: '#4a4038', b: '#8a5a30', w: '#cfd6dd' },
+     frames: {
+       idle: [
+         "........................",
+         "........................",
+         ".........HHHH....w......",
+         "........HHssHH....w.....",
+         "........ssssss.....w....",
+         "........sdssds.....w....",
+         "........ssssss.....w....",
+         "........fffffff.wwww....",
+         "..bb...fffffff.....w....",
+         ".bbb..fffffffff....w....",
+         ".bbb..fffffff.....w.....",
+         ".bbb..fffffff....w......",
+         "......dfffffff..........",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         "......ddd......ddd......",
+         "......ddd......ddd......",
+         "........................",
+         "........................",
+         "........................"
+       ],
+       w0: [
+         "........................",
+         "........................",
+         ".........HHHH....w......",
+         "........HHssHH....w.....",
+         "........ssssss.....w....",
+         "........sdssds.....w....",
+         "........ssssss.....w....",
+         "........fffffff.wwww....",
+         "..bb...fffffff.....w....",
+         ".bbb..fffffffff....w....",
+         ".bbb..fffffff.....w.....",
+         ".bbb..fffffff....w......",
+         "......dfffffff..........",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         "....ddd........ddd......",
+         "....ddd........ddd......",
+         "........................",
+         "........................",
+         "........................"
+       ],
+       w1: [
+         "........................",
+         "........................",
+         ".........HHHH....w......",
+         "........HHssHH....w.....",
+         "........ssssss.....w....",
+         "........sdssds.....w....",
+         "........ssssss.....w....",
+         "........fffffff.wwww....",
+         "..bb...fffffff.....w....",
+         ".bbb..fffffffff....w....",
+         ".bbb..fffffff.....w.....",
+         ".bbb..fffffff....w......",
+         "......dfffffff..........",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         "........................",
+         "........ddd.ddd.........",
+         "........ddd.ddd.........",
+         "........................",
+         "........................",
+         "........................"
+       ],
+       w2: [
+         "........................",
+         "........................",
+         ".........HHHH....w......",
+         "........HHssHH....w.....",
+         "........ssssss.....w....",
+         "........sdssds.....w....",
+         "........ssssss.....w....",
+         "........fffffff.wwww....",
+         "..bb...fffffff.....w....",
+         ".bbb..fffffffff....w....",
+         ".bbb..fffffff.....w.....",
+         ".bbb..fffffff....w......",
+         "......dfffffff..........",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......ddd.......ddd....",
+         ".......ddd.......ddd....",
+         "........................",
+         "........................",
+         "........................"
+       ],
+       w3: [
+         "........................",
+         "........................",
+         ".........HHHH....w......",
+         "........HHssHH....w.....",
+         "........ssssss.....w....",
+         "........sdssds.....w....",
+         "........ssssss.....w....",
+         "........fffffff.wwww....",
+         "..bb...fffffff.....w....",
+         ".bbb..fffffffff....w....",
+         ".bbb..fffffff.....w.....",
+         ".bbb..fffffff....w......",
+         "......dfffffff..........",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         "........................",
+         "........ddd.ddd.........",
+         "........ddd.ddd.........",
+         "........................",
+         "........................",
+         "........................"
+       ],
+       atk: [
+         "........................",
+         "........................",
+         ".........HHHH....ww.....",
+         "........HHssHH.....ww...",
+         "........ssssss.......w..",
+         "........sdssds........w.",
+         "........ssssss........w.",
+         "........fffffff.wwwwwww.",
+         "..bb...fffffff........w.",
+         ".bbb..fffffffff.......w.",
+         ".bbb..fffffff........w..",
+         ".bbb..fffffff......ww...",
+         "......dfffffff...ww.....",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         ".......dd......dd.......",
+         "......ddd......ddd......",
+         "......ddd......ddd......",
+         "........................",
+         "........................",
+         "........................"
+       ]
+     }
+   },
+   catapult: {
+     scale: 1,
+     palette: { w: '#8a5a30', d: '#3a3028' },
+     frames: {
+       idle: [
+         "........................",
+         "........................",
+         "..........wwwwww........",
+         ".........wwddddww.......",
+         "..........wddww.........",
+         "...........ww...........",
+         "..........ww..ww........",
+         ".........ww..ww.........",
+         "........ww..ww..........",
+         ".......ww..ww...........",
+         "......ww..ww............",
+         ".....ww..ww.............",
+         "....ww..ww..............",
+         "...ww..ww...............",
+         "..ww..ww................",
+         "..ww..ww................",
+         "..ww..ww................",
+         "..ww..ww................",
+         "..ww..ww................",
+         "wwwwwwwwwwwwwwww........",
+         "....wwww.......wwww.....",
+         "....w..w.......w..w.....",
+         "....wddw.......wddw.....",
+         "....wddw.......wddw.....",
+         "....w..w.......w..w.....",
+         "........................",
+         "........................",
+         "........................"
+       ],
+       w0: null, w1: [
+         "........................",
+         "........................",
+         "...........wwwwww.......",
+         "..........wwddddww......",
+         "...........wddww........",
+         "............ww..........",
+         "..........ww..ww........",
+         ".........ww..ww.........",
+         "........ww..ww..........",
+         ".......ww..ww...........",
+         "......ww..ww............",
+         ".....ww..ww.............",
+         "....ww..ww..............",
+         "...ww..ww...............",
+         "..ww..ww................",
+         "..ww..ww................",
+         "..ww..ww................",
+         "..ww..ww................",
+         "..ww..ww................",
+         "wwwwwwwwwwwwwwww........",
+         "....wwww.......wwww.....",
+         "....w..w.......w..w.....",
+         "....wddw.......wddw.....",
+         "....wddw.......wddw.....",
+         "....w..w.......w..w.....",
+         "........................",
+         "........................",
+         "........................"
+       ],
+       atk: [
+         "...........wwwwww.......",
+         "..........wwddddww......",
+         "...........wddww........",
+         "............ww..........",
+         ".............w.w........",
+         "..............w...w.....",
+         "..........ww..ww........",
+         ".........ww..ww.........",
+         "........ww..ww..........",
+         ".......ww..ww...........",
+         "......ww..ww............",
+         ".....ww..ww.............",
+         "....ww..ww..............",
+         "...ww..ww...............",
+         "..ww..ww................",
+         "..ww..ww................",
+         "..ww..ww................",
+         "..ww..ww................",
+         "..ww..ww................",
+         "wwwwwwwwwwwwwwww........",
+         "....wwww.......wwww.....",
+         "....w..w.......w..w.....",
+         "....wddw.......wddw.....",
+         "....wddw.......wddw.....",
+         "....w..w.......w..w.....",
+         "........................",
+         "........................",
+         "........................"
+       ]
+     }
+   }
+ };
+
+ const BUILDING_SPRITE_DEFS = {
+   towncenter: {
+     scale: 2,
+     palette: { r: '#a05038', s: '#9aa0a6', S: '#6a7076', d: '#3a2a1a' },
+     rows: [
+       "........rrrr........",
+       ".......rrrrrr.......",
+       "......rrrrrrrr......",
+       ".....rrrrrrrrrr.....",
+       "....rrrrrrrrrrrr....",
+       "....ssssssssssSS....",
+       "....ss.ss..ss.SS....",
+       "....ss.ss..ss.SS....",
+       "....ssssssssssSS....",
+       "....ffssssssssSS....",
+       "....fsssssssssSS....",
+       "....fsssssssssSS....",
+       "....fsssssssssSS....",
+       "....fsssssssssSS....",
+       "....fsssssssssSS....",
+       "....sssssddssSS.....",
+       "....sssssddssSS.....",
+       "....ssssddddssSS....",
+       "....SSSSddddSSSS....",
+       "....SSSSddddSSSS...."
+     ]
+   },
+   farm: {
+     scale: 1,
+     palette: { g: '#3f6d2e', x: '#d8b840', h: '#8a5a30', d: '#3a2a1a' },
+     rows: [
+       "ggggggggggggg.......",
+       "gxxgxxgxxgxxg.......",
+       "ggggggggggggg.......",
+       "gxxgxxgxxgxxg.......",
+       "ggggggggggggg...h...",
+       "gxxgxxgxxgxxg..hhh..",
+       "ggggggggggggg.hhhhh.",
+       "gxxgxxgxxgxxg.hhhhhh",
+       "ggggggggggggg.hhhhhh",
+       "gxxgxxgxxgxxg.hhhhhh",
+       "ggggggggggggg.hddhhh",
+       "gxxgxxgxxgxxg.hddhhh",
+       "ggggggggggggg.hddhhh",
+       "gxxgxxgxxgxxg.hddhhh",
+       "ggggggggggggg.hhhhhh",
+       "gxxgxxgxxgxxg.hhhhhh",
+       "ggggggggggggg.hddhhh",
+       "gxxgxxgxxgxxg.hddhhh",
+       "ggggggggggggg.hhhhhh",
+       "ggggggggggggg.hhhhhh"
+     ]
+   },
+   barracks: {
+     scale: 1,
+     palette: { s: '#9aa0a6', S: '#6a7076', d: '#3a2a1a' },
+     rows: [
+       ".....f........f.....",
+       "....ssssssssssssss..",
+       "....ssssssssssssss..",
+       "....ssssssssssssss..",
+       "....ss.ssss.ss.ss...",
+       "....ss.ssss.ss.ss...",
+       "....ssssssssssssss..",
+       "....fsssssssssssss..",
+       "....fsssssssssssss..",
+       "....fsssssssssssss..",
+       "....fsssssssssssss..",
+       "....fsssssssssssss..",
+       "....fsssssssssssss..",
+       "....fsssssssssssss..",
+       "....ssssssssssssss..",
+       "....ssssssssssssss..",
+       "....ssssddddssssss..",
+       "....ssssddddssssss..",
+       "....SSSSddddSSSSSS..",
+       "....SSSSddddSSSSSS.."
+     ]
+   }
+ };
+
+ // Bake one pixel grid into an offscreen canvas ('f' = faction color).
+ function bakeSprite(rows, scale, palette, faction) {
+   const c = document.createElement('canvas');
+   c.width = rows[0].length * scale;
+   c.height = rows.length * scale;
+   const g = c.getContext('2d');
+   for (let y = 0; y < rows.length; y++) {
+     const row = rows[y];
+     for (let x = 0; x < row.length; x++) {
+       const ch = row[x];
+       if (ch === '.') continue;
+       const col = ch === 'f' ? FACTION_COLORS[faction] : palette[ch];
+       if (!col) continue;
+       g.fillStyle = col;
+       g.fillRect(x * scale, y * scale, scale, scale);
+     }
+   }
+   return c;
+ }
+ // All-white copy of a sprite (used as the damage-flash overlay).
+ function bakeWhite(rows, scale) {
+   const c = document.createElement('canvas');
+   c.width = rows[0].length * scale;
+   c.height = rows.length * scale;
+   const g = c.getContext('2d');
+   g.fillStyle = '#fff';
+   for (let y = 0; y < rows.length; y++)
+     for (let x = 0; x < rows[0].length; x++)
+       if (rows[y][x] !== '.') g.fillRect(x * scale, y * scale, scale, scale);
+   return c;
+ }
+ // Build the sprite caches: SPRITES[type][owner] = { idle, walk[], atk, white }
+ const WALK_FRAMES = { worker: 4, swordsman: 4, archer: 4, catapult: 2 };
+ const SPRITES = {};
+ for (const type in SPRITE_DEFS) {
+   const def = SPRITE_DEFS[type], n = WALK_FRAMES[type];
+   SPRITES[type] = {};
+   for (const owner of OWNERS) {
+     const fr = def.frames, walk = [];
+     for (let i = 0; i < n; i++) {
+       const g = fr['w'+i] || fr.idle;
+       walk.push(bakeSprite(g, def.scale, def.palette, owner));
+     }
+     SPRITES[type][owner] = { idle: bakeSprite(fr.idle, def.scale, def.palette, owner),
+       walk, atk: fr.atk ? bakeSprite(fr.atk, def.scale, def.palette, owner) : null,
+       white: bakeWhite(fr.idle, def.scale) };
+   }
+ }
+ // BSPRITES[type][owner] = single building sprite (faction-colored)
+ const BSPRITES = {};
+ for (const type in BUILDING_SPRITE_DEFS) {
+   const def = BUILDING_SPRITE_DEFS[type];
+   BSPRITES[type] = {};
+   for (const owner of OWNERS) {
+     BSPRITES[type][owner] = bakeSprite(def.rows, def.scale, def.palette, owner);
+   }
+ }
+
+ /* ============================================================
+  * 2. SMALL UTILITIES & PATHFINDING (A*)
+  * ============================================================ */
+ function dist(ax, ay, bx, by) { return Math.hypot(bx - ax, by - ay); }
+ function clampUnit(u) {
+   u.x = Math.max(UNIT_R, Math.min(W - UNIT_R, u.x));
+   u.y = Math.max(UNIT_R, Math.min(H - UNIT_R, u.y));
+ }
+ // Deterministic decorative tree placement
+ function treeAt(tx, ty) {
+   return (tx * 73 + ty * 151 + ((tx * 13 + ty * 7) % 29)) % 47 < 4;
+ }
+
+ // Tiny binary min-heap over [f, nodeIndex] pairs (keeps A* fast on the 160x120 grid)
+ class Heap {
+   constructor() { this.a = []; }
+   push(f, i) {
+     const a = this.a; a.push([f, i]);
+     let c = a.length - 1;
+     while (c > 0) { const p = (c - 1) >> 1; if (a[p][0] <= a[c][0]) break; [a[p], a[c]] = [a[c], a[p]]; c = p; }
+   }
+   pop() {
+     const a = this.a, top = a[0], last = a.pop();
+     if (a.length) {
+       a[0] = last; // sift the new root down (must happen before the loop)
+       let c = 0;
+       for (;;) {
+         const l = c * 2 + 1, r = l + 1; let m = c;
+         if (l < a.length && a[l][0] < a[m][0]) m = l;
+         if (r < a.length && a[r][0] < a[m][0]) m = r;
+         if (m === c) break;
+         [a[m], a[c]] = [a[c], a[m]]; c = m;
+       }
+     }
+     return top;
+   }
+ }
+
+ const DIRS = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+ // Grid A* on the tile map. Returns array of [tx,ty] waypoints (excluding start) or null.
+ function aStar(sx, sy, tx, ty, blocked) {
+   if (sx === tx && sy === ty) return [];
+   const start = sx + sy * COLS, goal = tx + ty * COLS;
+   const g = new Float32Array(COLS * ROWS); g.fill(Infinity);
+   const came = new Int32Array(COLS * ROWS); came.fill(-1);
+   const closed = new Uint8Array(COLS * ROWS);
+   const open = new Heap();
+   g[start] = 0; open.push(0, start);
+   const h = i => { const x = i % COLS, y = (i / COLS) | 0; return Math.abs(x - tx) + Math.abs(y - ty); };
+   while (open.a.length) {
+     const top = open.pop(), cur = top[1];
+     if (closed[cur]) continue;
+     closed[cur] = 1;
+     if (cur === goal) {
+       const path = []; let i = goal;
+       while (i !== start && i !== -1) { path.push([i % COLS, (i / COLS) | 0]); i = came[i]; }
+       path.reverse();
+       return path;
+     }
+     const cx = cur % COLS, cy = (cur / COLS) | 0;
+     for (const d of DIRS) {
+       const nx = cx + d[0], ny = cy + d[1];
+       if (nx < 0 || ny < 0 || nx >= COLS || ny >= ROWS) continue;
+       if (blocked[nx + ny * COLS]) continue;
+       // no cutting corners diagonally through two blocked tiles
+       if (d[0] && d[1] && (blocked[(cx + d[0]) + cy * COLS] || blocked[cx + (cy + d[1]) * COLS])) continue;
+       const ni = nx + ny * COLS;
+       if (closed[ni]) continue;
+       const ng = g[cur] + 1;
+       if (ng < g[ni]) { g[ni] = ng; came[ni] = cur; open.push(ng + h(ni), ni); }
+     }
+   }
+   return null;
+ }
+
+ // Nearest walkable tile near a world position (used when the exact target tile is blocked, e.g. inside a building)
+ function walkTileNear(x, y, game) {
+   const tx = (x / TILE) | 0, ty = (y / TILE) | 0;
+   if (tx >= 0 && ty >= 0 && tx < COLS && ty < ROWS && !game.blocked[tx + ty * COLS]) return [tx, ty];
+   for (let r = 1; r <= 3; r++) {
+     for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+       if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+       const nx = tx + dx, ny = ty + dy;
+       if (nx < 0 || ny < 0 || nx >= COLS || ny >= ROWS) continue;
+       if (!game.blocked[nx + ny * COLS]) return [nx, ny];
+     }
+   }
+   return [Math.max(0, Math.min(COLS - 1, tx)), Math.max(0, Math.min(ROWS - 1, ty))];
+ }
+
+ /* ============================================================
+  * 3. MAP BLOCKING (buildings block movement; mines do not)
+  * ============================================================ */
+ function markBlocked(game, b) {
+   for (let dy = 0; dy < b.h; dy++) for (let dx = 0; dx < b.w; dx++)
+     game.blocked[(b.tx + dx) + (b.ty + dy) * COLS] = 1;
+ }
+ function clearBlocked(game, b) {
+   for (let dy = 0; dy < b.h; dy++) for (let dx = 0; dx < b.w; dx++)
+     game.blocked[(b.tx + dx) + (b.ty + dy) * COLS] = 0;
+ }
+ function mineAt(game, tx, ty) {
+   for (const m of game.mines) if (m.tx === tx && m.ty === ty) return m;
+   return null;
+ }
+
+ /* ============================================================
+  * 4. ENTITIES: MINES, BUILDINGS, UNITS
+  * ============================================================ */
+ class Mine {
+   constructor(tx, ty) {
+     this.id = nextId++;
+     this.tx = tx; this.ty = ty;
+     this.x = tx * TILE + TILE / 2; this.y = ty * TILE + TILE / 2;
+     this.gold = MINE_CAPACITY;
+     this.dead = false;
+   }
+ }
+
+ class Building {
+   constructor(game, type, owner, tx, ty) {
+     const d = BUILDING_DEFS[type];
+     this.id = nextId++;
+     this.kind = 'building';
+     this.type = type; this.owner = owner;
+     this.tx = tx; this.ty = ty; this.w = d.w; this.h = d.h;
+     this.x = (tx + d.w / 2) * TILE; this.y = (ty + d.h / 2) * TILE; // world-space center
+     this.radius = ((d.w + d.h) / 4) * TILE;                          // approx hit radius
+     this.maxHp = d.hp; this.hp = d.hp;
+     this.complete = d.buildTime === 0;
+     this.buildLeft = d.buildTime;
+     this.training = null; // { type, left, total }
+     this.dead = false;
+     this.flash = 0; // visual-only damage flash
+   }
+   update(dt, game) {
+     if (this.dead) return;
+     this.flash = Math.max(0, this.flash - dt);
+     if (!this.complete) {
+       this.buildLeft -= dt;
+       if (this.buildLeft <= 0) { this.complete = true; SFX.buildDone(); }
+       return;
+     }
+     // finish training: spawn the new unit on a free tile next to the building
+     if (this.training) {
+       this.training.left -= dt;
+       if (this.training.left <= 0) {
+         const type = this.training.type;
+         const pos = findSpawnSpot(this, game);
+         if (pos) {
+           this.training = null;
+           const u = new Unit(game, type, this.owner, pos[0] * TILE + TILE / 2, pos[1] * TILE + TILE / 2);
+           game.factions[this.owner].units.push(u);
+           game.units.push(u);
+           SFX.trainDone();
+         } else {
+           this.training.left = 0.25; // retry shortly if no free tile yet
+         }
+       }
+     }
+   }
+ }
+
+ // First free tile (ring by ring) around `anchor` with no unit on top of it
+ function findSpawnSpot(anchor, game) {
+   const cx = (anchor.x / TILE) | 0, cy = (anchor.y / TILE) | 0;
+   for (let r = 1; r <= 3; r++) {
+     for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+       if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+       const tx = cx + dx, ty = cy + dy;
+       if (tx < 0 || ty < 0 || tx >= COLS || ty >= ROWS) continue;
+       if (game.blocked[tx + ty * COLS]) continue;
+       const wx = tx * TILE + TILE / 2, wy = ty * TILE + TILE / 2;
+       let clear = true;
+       for (const u of game.units) if (dist(wx, wy, u.x, u.y) < UNIT_R * 2) { clear = false; break; }
+       if (clear) return [tx, ty];
+     }
+   }
+   return null;
+ }
+
+ class Unit {
+   constructor(game, type, owner, x, y) {
+     const d = UNIT_DEFS[type];
+     this.id = nextId++;
+     this.kind = 'unit';
+     this.type = type; this.owner = owner;
+     this.x = x; this.y = y;
+     this.hp = d.hp; this.maxHp = d.hp;
+     this.speed = d.speed; this.range = d.range;
+     this.dmg = d.dmg; this.interval = d.interval;
+     this.atkCd = 0;
+     this.carry = 0;            // gold carried by a worker
+     this.order = { type: 'idle' };
+     this.path = [];            // A* waypoints [tx,ty]
+     this.fallback = null;      // direct-move target if no path exists
+     this.repath = 0;
+     this.vx = 0; this.vy = 0;  // velocity (used to lead moving targets with projectiles)
+     this.dead = false;
+     // visual-only state (stage 7) — never snapshotted, fully deterministic
+     this.facing = 1;      // +1 = right, -1 = left (sprite flip)
+     this.walkFrames = WALK_FRAMES[this.type]; // frames in the walk cycle
+     this.walkPhase = 0;   // drives the N-frame walk cycle (N = walkFrames)
+     this.moving = false;  // stepped on this frame?
+     this.flash = 0;       // damage-flash timer
+     this.attackAnim = 0;  // attack-pose timer
+   }
+   setOrder(o) {
+     this.order = o;
+     this.path = []; this.fallback = null; this.repath = 0;
+   }
+   ensurePath(tx, ty, game) {
+     if (this.path.length === 0 || this.repath <= 0) {
+       const [gx, gy] = walkTileNear(tx, ty, game);
+       const p = aStar(Math.floor(this.x / TILE), Math.floor(this.y / TILE), gx, gy, game.blocked);
+       if (p) this.path = p; else { this.path = []; this.fallback = { x: tx, y: ty }; }
+       this.repath = 0.7;
+     }
+   }
+   stepPath(dt, game) {
+     const px = this.x, py = this.y;
+     if (this.path.length) {
+       const wp = this.path[0];
+       const wx = wp[0] * TILE + TILE / 2, wy = wp[1] * TILE + TILE / 2;
+       const dx = wx - this.x, dy = wy - this.y, d = Math.hypot(dx, dy);
+       if (d < 3) this.path.shift();
+       else {
+         const s = this.speed * dt;
+         if (s >= d) { this.x = wx; this.y = wy; }
+         else { this.x += dx / d * s; this.y += dy / d * s; }
+       }
+     } else if (this.fallback) {
+       const dx = this.fallback.x - this.x, dy = this.fallback.y - this.y, d = Math.hypot(dx, dy);
+       const s = this.speed * dt;
+       if (d <= s) { this.x = this.fallback.x; this.y = this.fallback.y; this.fallback = null; }
+       else { this.x += dx / d * s; this.y += dy / d * s; }
+     }
+     clampUnit(this);
+     if (dt > 0) {
+       this.vx = (this.x - px) / dt; this.vy = (this.y - py) / dt; // velocity for projectile leading
+       // visual state: facing + walk cycle (deterministic)
+       const mdx = this.x - px, mdy = this.y - py;
+       if (mdx < -0.5) this.facing = -1;
+       else if (mdx > 0.5) this.facing = 1;
+       this.moving = Math.abs(mdx) + Math.abs(mdy) > 0.5;
+       if (this.moving) this.walkPhase += dt * this.speed * (this.walkFrames / 24);
+     }
+     // if we drifted onto a blocked tile, force a fresh path next frame
+     if (game.blocked[Math.floor(this.x / TILE) + Math.floor(this.y / TILE) * COLS]) {
+       this.path = []; this.fallback = null; this.repath = 0;
+     }
+   }
+   doAttack(t, game) {
+     const d = UNIT_DEFS[this.type];
+     if (d.interval <= 0) return; // workers cannot attack
+     this.atkCd = d.interval;
+     this.attackAnim = 0.22; // show the attack pose briefly
+     if (d.proj) {
+       // ranged: fire a projectile at the predicted target position (simple leading)
+       const tdist = Math.max(1, Math.hypot(t.x - this.x, t.y - this.y));
+       const flight = tdist / d.proj.speed;
+       const px = t.x + (t.vx || 0) * flight, py = t.y + (t.vy || 0) * flight;
+       game.projectiles.push({
+         x: this.x, y: this.y, tx: px, ty: py,
+         owner: this.owner, speed: d.proj.speed, dmg: d.dmg,
+         splash: d.proj.splash, r: d.proj.r, color: d.proj.color,
+         kind: this.type,
+         btarget: (t.kind === 'building' ? t : null),
+         spin: 0, // visual: rock rotation
+         done: false
+       });
+       SFX.shot(this.type);
+     } else {
+       t.hp -= d.dmg;
+       t.flash = 0.15;
+       if (t.hp <= 0) {
+         t.dead = true;
+         spawnPuff(t.x, t.y, t.kind === 'building' ? 9 : 5, t.kind === 'building' ? '#9aa0a6' : '#b03028', t.kind === 'building' ? 70 : 55);
+       }
+     }
+   }
+   update(dt, game) {
+     if (this.dead) return;
+     const f = game.factions[this.owner];
+     this.atkCd -= dt;
+     this.repath -= dt;
+     this.flash = Math.max(0, this.flash - dt);
+     this.attackAnim = Math.max(0, this.attackAnim - dt);
+     this.moving = false; // stepPath() re-sets it if we actually move
+     this.vx = 0; this.vy = 0; // stepPath() overwrites with actual displacement this frame
+
+     // workers auto-seek a gold mine while idle (applies to both factions)
+     if (this.type === 'worker' && this.order.type === 'idle') {
+       const m = nearestMineWithGold(this, game);
+       if (m) this.setOrder({ type: 'gather', mine: m });
+     }
+
+     // target acquisition (combat units only)
+     if (this.type !== 'worker') {
+       const o = this.order;
+       if (o.type === 'attackUnit' || o.type === 'attackBuilding') {
+         const t = o.target;
+         if (!t || t.dead) this.setOrder({ type: 'idle' });
+       }
+       if (this.order.type === 'idle' || this.order.type === 'move') {
+         let best = null, bd = AGGRO_RADIUS;
+         for (const u of game.units) {
+           if (u.dead || u.owner === this.owner) continue;
+           const dd = dist(this.x, this.y, u.x, u.y);
+           if (dd < bd) { bd = dd; best = u; }
+         }
+         if (best) this.setOrder({ type: 'attackUnit', target: best });
+       }
+     }
+
+     const o = this.order;
+     if (o.type === 'move') {
+       this.ensurePath(o.x, o.y, game);
+       this.stepPath(dt, game);
+     } else if (o.type === 'attackUnit') {
+       const t = o.target;
+       const reach = this.range + UNIT_R + 3;
+       if (dist(this.x, this.y, t.x, t.y) <= reach) {
+         this.path = []; this.fallback = null;
+         if (this.atkCd <= 0) this.doAttack(t, game);
+       } else {
+         this.ensurePath(t.x, t.y, game);
+         this.stepPath(dt, game);
+         if (dist(this.x, this.y, t.x, t.y) <= reach) { this.path = []; this.fallback = null; }
+       }
+     } else if (o.type === 'attackBuilding') {
+       const t = o.target;
+       if (t.dead) { this.setOrder({ type: 'idle' }); return; }
+       const reach = this.range + UNIT_R + t.radius;
+       if (dist(this.x, this.y, t.x, t.y) <= reach) {
+         this.path = []; this.fallback = null;
+         if (this.atkCd <= 0) this.doAttack(t, game);
+       } else {
+         this.ensurePath(t.x, t.y, game);
+         this.stepPath(dt, game);
+         if (dist(this.x, this.y, t.x, t.y) <= reach) { this.path = []; this.fallback = null; }
+       }
+     } else if (o.type === 'gather') {
+       const m = o.mine;
+       if (!m || m.gold <= 0) {
+         const nm = nearestMineWithGold(this, game);
+         if (nm) this.setOrder({ type: 'gather', mine: nm }); else this.setOrder({ type: 'idle' });
+         return;
+       }
+       if (this.carry >= CARRY_MAX) {
+         const tc = f.tc;
+         if (tc && !tc.dead) {
+           const d = dist(this.x, this.y, tc.x, tc.y);
+           if (d <= DEPOSIT_RADIUS) { f.gold += this.carry; this.carry = 0; SFX.coin(); }
+           else { this.ensurePath(tc.x, tc.y, game); this.stepPath(dt, game); }
+         } else this.setOrder({ type: 'idle' });
+       } else {
+         const d = dist(this.x, this.y, m.x, m.y);
+         if (d <= PICKUP_RADIUS) {
+           const amt = Math.min(CARRY_MAX - this.carry, CARRY_RATE * dt);
+           this.carry += amt;
+           m.gold = Math.max(0, m.gold - amt); // deplete the mine as gold is carried away
+         }
+         else { this.ensurePath(m.x, m.y, game); this.stepPath(dt, game); }
+       }
+     }
+   }
+ }
+
+ // Nearest non-empty mine for a worker; a penalty spreads workers across mines
+ function nearestMineWithGold(unit, game) {
+   let best = null, bs = Infinity;
+   const f = game.factions[unit.owner];
+   for (const m of game.mines) {
+     if (m.gold <= 0) continue;
+     let cnt = 0;
+     for (const u of f.units) if (u.type === 'worker' && u.order.type === 'gather' && u.order.mine === m) cnt++;
+     const s = dist(unit.x, unit.y, m.x, m.y) + cnt * 160;
+     if (s < bs) { bs = s; best = m; }
+   }
+   return best;
+ }
+
+ /* ============================================================
+  * 5. FACTION (economy bookkeeping)
+  * ============================================================ */
+ class Faction {
+   constructor(game, owner, tcTile, noStart) {
+     this.game = game;
+     this.owner = owner;
+     this.gold = 200;
+     this.units = [];
+     this.buildings = [];
+     if (noStart) return; // used when loading a saved game
+     // starting Town Center
+     this.tc = new Building(game, 'towncenter', owner, tcTile[0], tcTile[1]);
+     this.buildings.push(this.tc);
+     game.buildings.push(this.tc);
+     markBlocked(game, this.tc);
+     // starting 3 workers
+     for (let k = 0; k < 3; k++) {
+       const pos = findSpawnSpot(this.tc, game);
+       if (pos) {
+         const u = new Unit(game, 'worker', owner, pos[0] * TILE + TILE / 2, pos[1] * TILE + TILE / 2);
+         this.units.push(u);
+         game.units.push(u);
+       }
+     }
+   }
+   supplyUsed() { let s = 0; for (const u of this.units) s += UNIT_DEFS[u.type].supply; return s; }
+   supplyCap() { return BASE_SUPPLY + this.farmCount() * FARM_SUPPLY; }
+   farmCount() { let n = 0; for (const b of this.buildings) if (b.type === 'farm' && b.complete) n++; return n; }
+   combatUnits() { return this.units.filter(u => u.type !== 'worker'); }
+   workers() { return this.units.filter(u => u.type === 'worker'); }
+   hasComplete(type) { return this.buildings.some(b => b.type === type && b.complete); }
+ }
+
+ /* ============================================================
+  * 6. AI STATE MACHINE (develop -> attack -> develop ...)
+  * ============================================================ */
+ class AIController {
+   constructor(f, style) {
+     this.f = f;
+     this.style = style || 'balanced';
+     this.st = AI_STYLES[this.style];
+     f.style = this.style;
+     this.state = 'develop';
+     this.decision = 0;    // economy decision timer
+     this.reattack = 0;    // legacy field, kept for save compatibility
+     this.cmd = 0;         // tactical decision timer
+     this.alternate = false; // alternate swordsman / archer training
+   }
+   // units / buildings / army power of every other faction (no alliances)
+   enemyUnits(game) {
+     const out = [];
+     for (const o of OWNERS) if (o !== this.f.owner)
+       for (const u of game.factions[o].units) if (!u.dead) out.push(u);
+     return out;
+   }
+   enemyBuildings(game) {
+     const out = [];
+     for (const o of OWNERS) if (o !== this.f.owner)
+       for (const b of game.factions[o].buildings) if (!b.dead) out.push(b);
+     return out;
+   }
+   enemyPower(game) {
+     let p = 0;
+     for (const o of OWNERS) if (o !== this.f.owner)
+       for (const e of game.factions[o].combatUnits()) p += this.unitPower(e);
+     return p;
+   }
+   update(dt, game) {
+     if (game.over) return;
+     const f = this.f, st = this.st;
+     const army = f.combatUnits();
+     if (this.state === 'develop') {
+       // launch an attack wave only when the army is big enough to win it:
+       // style-specific minimum size plus a power edge over the combined
+       // armies of every other faction
+       let myPow = 0;
+       for (const a of army) myPow += this.unitPower(a);
+       const emyPow = this.enemyPower(game);
+       if (army.length >= st.atkSize && myPow >= emyPow * st.atkPow) {
+         this.state = 'attack';
+         this.cmd = 0;      // make tactical decisions immediately
+       } else {
+         this.decision -= dt;
+         if (this.decision <= 0) { this.decision = 0.5; this.develop(game); }
+       }
+     } else { // 'attack'
+       if (army.length === 0) {
+         this.state = 'develop';
+       } else {
+         const tc = f.tc;
+         // all units survived and returned home -> back to developing
+         if (tc && !tc.dead && army.every(u => dist(u.x, u.y, tc.x, tc.y) < 120)) this.state = 'develop';
+       }
+     }
+     // Tactical decisions (both states): engage enemy troops, harass
+     // player buildings/workers, or retreat, based on the local strength
+     // balance. Every unit with an idle, move, attackUnit or attackBuilding
+     // order re-evaluates: committed units fight a defence line in front of
+     // their target (or retreat), and units with an active unit target
+     // retarget for focus fire instead of keeping a stale target.
+     this.cmd -= dt;
+     if (this.cmd <= 0) {
+       this.cmd = AI_CMD_INTERVAL;
+       const offensive = this.state === 'attack';
+       for (const u of f.combatUnits()) {
+         const ot = u.order.type;
+         if (ot === 'idle' || ot === 'move' || ot === 'attackUnit' || ot === 'attackBuilding')
+           this.decideUnit(u, game, offensive,
+             ot === 'attackBuilding' || ot === 'attackUnit');
+       }
+     }
+   }
+   // Rough combat value of a unit: current HP plus damage potential.
+   // (a worker scores low: 40 hp, no attack)
+   unitPower(u) {
+     const d = UNIT_DEFS[u.type];
+     const dps = d.interval > 0 ? d.dmg / d.interval : 0;
+     return u.hp * 0.4 + dps * 4;
+   }
+   // Pick the order for one idle/moving AI combat unit:
+   //  - badly outnumbered nearby (or weak + not clearly winning) -> retreat
+   //  - enemy troops in engage range and winning/even odds -> attack them
+   //  - no troops nearby (offensive state) -> harass the weakest player
+   //    building in scan range (farms first, then barracks, TC last) or
+   //    advance on the nearest enemy / the player Town Center
+   decideUnit(u, game, offensive, committed) {
+     const f = this.f;
+     const st = this.st;
+     const tc = f.tc;
+     const enemies = this.enemyUnits(game);
+
+     // nearest enemies within the engage / scan radii
+     let near = null, nd = st.engage;
+     let threat = null, td = AI_SCAN_RADIUS;
+     for (const e of enemies) {
+       const d = dist(u.x, u.y, e.x, e.y);
+       if (d < nd) { nd = d; near = e; }
+       if (d < td) { td = d; threat = e; }
+     }
+
+     // local strength balance: our units vs enemy units near this unit
+     let myPow = this.unitPower(u), emyPow = 0;
+     for (const a of f.combatUnits())
+       if (a !== u && dist(a.x, a.y, u.x, u.y) < AI_SCAN_RADIUS) myPow += this.unitPower(a);
+     for (const e of enemies)
+       if (dist(e.x, e.y, u.x, u.y) < AI_SCAN_RADIUS) emyPow += this.unitPower(e);
+     const ratio = emyPow > 0 ? myPow / emyPow : Infinity;
+     const weak = u.hp < u.maxHp * 0.4;
+
+     // RETREAT: badly outnumbered nearby, or weak + not clearly winning
+     if (threat && (ratio < st.retreatAt || (weak && ratio < 1.0))) {
+       let rx, ry;
+       if (tc && !tc.dead && dist(u.x, u.y, tc.x, tc.y) > RETREAT_RADIUS) { rx = tc.x; ry = tc.y; }
+       else { // no base to return to (or already at home): run away
+         const d = Math.max(1, td);
+         rx = u.x + (u.x - threat.x) / d * 200;
+         ry = u.y + (u.y - threat.y) / d * 200;
+       }
+       // do not re-issue an identical order (setOrder would reset the path)
+       if (!(u.order.type === 'move' && u.order.x === rx && u.order.y === ry))
+         u.setOrder({ type: 'move', x: rx, y: ry });
+       return;
+     }
+
+     // ENGAGE: enemy troops within engage range
+     if (near) {
+       const inWeaponRange = dist(u.x, u.y, near.x, near.y) <= u.range + UNIT_R + 6;
+       // committed units (already fighting or marching on a building)
+       // engage as long as they are not badly outnumbered — they are in the
+       // fight zone; fresh units only initiate when their style says the odds
+       // are good enough (aggressive early, defensive only with a clear edge)
+       const engageOk = committed ? ratio >= st.retreatAt : (ratio >= st.engagePow || inWeaponRange);
+       if (engageOk) {
+         // focus fire: weakest enemy in range (tie -> nearest); if nothing
+         // in range, close on the nearest
+         let target = null, tHp = Infinity, tD = Infinity;
+         for (const e of enemies) {
+           const d = dist(u.x, u.y, e.x, e.y);
+           if (d > st.engage) continue;
+           if (e.hp < tHp || (e.hp === tHp && d < tD)) { tHp = e.hp; tD = d; target = e; }
+         }
+         const t = target || near;
+         if (u.order.type !== 'attackUnit' || u.order.target !== t)
+           u.setOrder({ type: 'attackUnit', target: t });
+         return;
+       }
+       return; // hold position
+     }
+     // active unit target but nothing within engage radius: keep pursuing
+     if (u.order.type === 'attackUnit') return;
+
+     // No enemy troops near:
+     if (offensive) {
+       // HARASS: weakest enemy building in scan range
+       // (farms first, then barracks, Town Center last)
+       let best = null, bs = Infinity;
+       for (const b of this.enemyBuildings(game)) {
+         const d = dist(u.x, u.y, b.x, b.y);
+         if (d > st.buildScan) continue;
+         const pri = b.type === 'farm' ? 0 : b.type === 'barracks' ? 90 : 180;
+         if (d + pri < bs) { bs = d + pri; best = b; }
+       }
+       if (best) {
+         if (u.order.type !== 'attackBuilding' || u.order.target !== best)
+           u.setOrder({ type: 'attackBuilding', target: best });
+         return;
+       }
+       // main objective: march on the nearest living enemy Town Center
+       let bestTc = null, btcd = Infinity;
+       for (const o of AI_OWNERS) {
+         const e = game.factions[o];
+         if (e.owner === f.owner || !e.tc || e.tc.dead) continue;
+         const d = dist(u.x, u.y, e.tc.x, e.tc.y);
+         if (d < btcd) { btcd = d; bestTc = e.tc; }
+       }
+       if (bestTc) { u.setOrder({ type: 'attackBuilding', target: bestTc }); return; }
+       // no bases left: advance on the nearest enemy unit
+       if (enemies.length) {
+         let t = null, btd = Infinity;
+         for (const e of enemies) {
+           const d = dist(u.x, u.y, e.x, e.y);
+           if (d < btd) { btd = d; t = e; }
+         }
+         u.setOrder({ type: 'move', x: t.x, y: t.y });
+       }
+     }
+     // defensive (develop state): hold position; passive aggro defends the base
+   }
+   develop(game) {
+     const f = this.f;
+     const st = this.st;
+     if (!f.tc || f.tc.dead) return;
+     const bc = f.buildings.find(b => b.type === 'barracks' && b.complete);
+     const constructing = f.buildings.some(b => !b.complete);
+     // economy: build Barracks first, then Farms up to the style target,
+     // then replace dead workers
+     if (!constructing) {
+       if (!bc && f.gold >= BUILDING_DEFS.barracks.cost) { this.startBuild('barracks'); return; }
+       if (f.farmCount() < st.farmTarget && f.gold >= BUILDING_DEFS.farm.cost) { this.startBuild('farm'); return; }
+       if (f.workers().length < 3 && f.gold >= UNIT_DEFS.worker.cost && !f.tc.training) {
+         this.trainAt(f.tc, 'worker');
+       }
+     }
+     // army: mix of swordsmen and archers, style-specific catapult appetite
+     if (bc && !bc.training && f.combatUnits().length < st.armyCap) {
+       const army = f.combatUnits().length;
+       let pick;
+       if (st.catapults && f.gold >= st.catapults[0] && army >= st.catapults[1]) pick = 'catapult';
+       else { this.alternate = !this.alternate; pick = this.alternate ? 'archer' : 'swordsman'; }
+       this.trainAt(bc, pick);
+     }
+   }
+   startBuild(type) {
+     const f = this.f;
+     const pos = this.findBuildSpot();
+     if (!pos) return;
+     f.gold -= BUILDING_DEFS[type].cost;
+     const b = new Building(f.game, type, f.owner, pos[0], pos[1]);
+     f.buildings.push(b);
+     f.game.buildings.push(b);
+     markBlocked(f.game, b);
+   }
+   trainAt(b, type) {
+     const f = this.f;
+     const d = UNIT_DEFS[type];
+     if (!b || b.dead || !b.complete || b.training) return;
+     if (f.gold < d.cost) return;
+     if (f.supplyUsed() + d.supply > f.supplyCap()) return;
+     f.gold -= d.cost;
+     b.training = { type, left: d.trainTime, total: d.trainTime };
+   }
+   findBuildSpot() {
+     const game = this.f.game;
+     const cx = (this.f.tc.x / TILE) | 0, cy = (this.f.tc.y / TILE) | 0;
+     for (let r = 1; r <= 4; r++) {
+       for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+         if (Math.abs(dx) !== r && Math.abs(dy) !== r) continue;
+         const tx = cx + dx, ty = cy + dy;
+         if (tx < 0 || ty < 0 || tx >= COLS || ty >= ROWS) continue;
+         if (game.blocked[tx + ty * COLS]) continue;
+         if (mineAt(game, tx, ty)) continue;
+         return [tx, ty];
+       }
+     }
+     return null;
+   }
+ }
+
+ /* ============================================================
+  * 7. GAME STATE CONSTRUCTION
+  * ============================================================ */
+ // classic layout (scaled 2x for the 160x120 world): four bases spread
+ // across the map — player left, three AI bases right / top / bottom
+ const CLASSIC_MINES = [
+   [34, 44], [34, 68],      // player (left)
+   [126, 44], [126, 68],    // AI0 (right)
+   [68, 26], [92, 26],      // AI1 (top)
+   [68, 94], [92, 94]       // AI2 (bottom)
+ ];
+ const PLAYER_TC_TILE = [16, 56];   // player Town Center (left edge, mid-height)
+ const AI0_TC_TILE = [142, 56];     // AI1 Town Center (right edge, mid-height)
+ const AI1_TC_TILE = [79, 12];      // AI2 Town Center (top edge, mid-width)
+ const AI2_TC_TILE = [79, 106];     // AI3 Town Center (bottom edge, mid-width)
+ const BASE_TILES = [PLAYER_TC_TILE, AI0_TC_TILE, AI1_TC_TILE, AI2_TC_TILE];
+ const DEFAULT_SEED = 0; // seed 0 = classic fixed map (deterministic, regression-compatible)
+
+ // Deterministic seeded PRNG (mulberry32): same seed -> same map, every time
+ function mulberry32(seed) {
+   let a = seed >>> 0;
+   return function() {
+     a = (a + 0x6D2B79F5) | 0;
+     let t = Math.imul(a ^ (a >>> 15), 1 | a);
+     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+   };
+ }
+
+ // Two-octave seeded value noise in [0,1] — organic, clumpy regions.
+ function valueNoise2D(rnd, gw, gh) {
+   const gv = new Float32Array((gw + 1) * (gh + 1));
+   for (let i = 0; i < gv.length; i++) gv[i] = rnd();
+   return function (u, v) {
+     const x = u * gw, y = v * gh;
+     const x0 = Math.min(gw - 1, x | 0), y0 = Math.min(gh - 1, y | 0);
+     const fx = x - x0, fy = y - y0;
+     const v00 = gv[x0 + y0 * (gw + 1)], v10 = gv[x0 + 1 + y0 * (gw + 1)];
+     const v01 = gv[x0 + (y0 + 1) * (gw + 1)], v11 = gv[x0 + 1 + (y0 + 1) * (gw + 1)];
+     const a = v00 + (v10 - v00) * fx, b = v01 + (v11 - v01) * fx;
+     return a + (b - a) * fy;
+   };
+ }
+
+ // Random terrain from the seed: 0 = land, 1 = water, 2 = mountain.
+ // Keeps the world border, all four bases (Chebyshev radius 2) and every
+ // mine tile (radius 1) walkable, so no base or mine is ever walled in.
+ function genTerrainTiles(seed, mines, bases) {
+   const rnd = mulberry32((seed ^ 0xa573c9d2) >>> 0);
+   const n1 = valueNoise2D(rnd, 12, 9);
+   const n2 = valueNoise2D(rnd, 24, 18);
+   const ter = new Uint8Array(COLS * ROWS);
+   for (let ty = 0; ty < ROWS; ty++) {
+     for (let tx = 0; tx < COLS; tx++) {
+       const u = tx / (COLS - 1), v = ty / (ROWS - 1);
+       const n = n1(u, v) * 0.65 + n2(u, v) * 0.35;
+       let kind = n < 0.34 ? 1 : n > 0.72 ? 2 : 0; // ~13% water, ~10% mountain
+       if (tx === 0 || ty === 0 || tx === COLS - 1 || ty === ROWS - 1) kind = 0; // walkable border
+       for (const [bx, by] of bases)
+         if (Math.max(Math.abs(tx - bx), Math.abs(ty - by)) <= 2) kind = 0;
+       for (const [mx, my] of mines)
+         if (Math.max(Math.abs(tx - mx), Math.abs(ty - my)) <= 1) kind = 0;
+       ter[tx + ty * COLS] = kind;
+     }
+   }
+   return ter;
+ }
+
+ // 8-connected BFS from the player base: every AI base must be reachable
+ // without crossing water/mountain (guards against a wall splitting the map)
+ function basesConnected(ter) {
+   const goals = BASE_TILES.map(([bx, by]) => bx + by * COLS);
+   const seen = new Uint8Array(COLS * ROWS);
+   const start = goals[0];
+   const q = [start]; seen[start] = 1;
+   let reached = 1;
+   for (let qi = 0; qi < q.length && reached < goals.length; qi++) {
+     const cur = q[qi];
+     const cx = cur % COLS, cy = (cur / COLS) | 0;
+     for (const d of DIRS) {
+       const nx = cx + d[0], ny = cy + d[1];
+       if (nx < 0 || ny < 0 || nx >= COLS || ny >= ROWS) continue;
+       const ni = nx + ny * COLS;
+       if (seen[ni] || ter[ni]) continue;
+       seen[ni] = 1;
+       if (goals.indexOf(ni) !== -1) reached++;
+       q.push(ni);
+     }
+   }
+   return reached === goals.length;
+ }
+
+ // Generate a map from a seed: 8 gold mines (2 per base), random
+ // water/mountain terrain, and a decorative tree mask. Seed 0 reproduces
+ // the classic 4-base layout exactly.
+ function genMap(seed) {
+   let mines;
+   const bases = BASE_TILES;
+   if (seed === 0) {
+     mines = CLASSIC_MINES.slice();
+   } else {
+     const rnd = mulberry32(seed);
+     mines = null;
+     // two mines per base, each inside its local patch
+     for (let attempt = 0; attempt < 100 && !mines; attempt++) {
+       const cand = [];
+       for (const [bx, by] of bases)
+         for (let k = 0; k < 2; k++)
+           cand.push([12 + ((rnd() * (COLS - 24)) | 0), 8 + ((rnd() * (ROWS - 16)) | 0)]);
+       let ok = true;
+       // each base must have a mine in its local patch (120-440 px from base center)
+       for (const [bx, by] of bases) {
+         const cx = (bx + 1) * TILE, cy = (by + 1) * TILE;
+         let near = false;
+         for (const [tx, ty] of cand) {
+           const d = Math.hypot(tx * TILE + TILE / 2 - cx, ty * TILE + TILE / 2 - cy);
+           if (d >= 120 && d <= 440) { near = true; break; }
+         }
+         if (!near) { ok = false; break; }
+       }
+       // mines must not sit on top of each other
+       for (let i = 0; i < cand.length && ok; i++)
+         for (let j = i + 1; j < cand.length && ok; j++) {
+           const [x1, y1] = cand[i], [x2, y2] = cand[j];
+           if (Math.hypot((x1 - x2) * TILE, (y1 - y2) * TILE) < 60) ok = false;
+         }
+       if (ok) mines = cand;
+     }
+     if (!mines) mines = CLASSIC_MINES.slice(); // safety fallback (should not happen)
+   }
+   // terrain: retry with a new sub-seed until all four bases stay connected
+   let terrain = null;
+   for (let k = 0; k < 8 && !terrain; k++) {
+     const ter = genTerrainTiles((seed ^ (k * 0x9e3779b9)) >>> 0, mines, bases);
+     if (basesConnected(ter)) terrain = ter;
+   }
+   if (!terrain) terrain = new Uint8Array(COLS * ROWS); // all-land fallback
+   const trees = new Uint8Array(COLS * ROWS);
+   if (seed === 0) {
+     for (let ty = 0; ty < ROWS; ty++) for (let tx = 0; tx < COLS; tx++)
+       trees[tx + ty * COLS] = treeAt(tx, ty) ? 1 : 0;
+   } else {
+     const rnd = mulberry32((seed ^ 0x517cc3b7) >>> 0);
+     for (let ty = 0; ty < ROWS; ty++) for (let tx = 0; tx < COLS; tx++)
+       trees[tx + ty * COLS] = rnd() < 0.085 ? 1 : 0;
+   }
+   for (let i = 0; i < COLS * ROWS; i++) if (terrain[i]) trees[i] = 0; // no tree on water/mountain
+   for (const [tx, ty] of mines) trees[tx + ty * COLS] = 0; // no tree under a mine
+   return { mines, trees, terrain };
+ }
+
+ // Random (deterministic per seed) playstyle roll for the three AI bases:
+ // the same seed always produces the same styles; a rolled seed re-rolls them.
+ function pickStyles(seed) {
+   const rnd = mulberry32((seed ^ 0x5157ed5) >>> 0);
+   const names = ['aggressive', 'defensive', 'balanced'];
+   const styles = {};
+   for (const o of AI_OWNERS) styles[o] = names[Math.floor(rnd() * 3)];
+   return styles;
+ }
+
+ function newGame(seed) {
+   const s = seed === undefined ? DEFAULT_SEED : (seed >>> 0);
+   const map = genMap(s);
+   const g = {
+     factions: {},
+     units: [], buildings: [], mines: [], projectiles: [], impacts: [],
+     particles: [], shake: 0,                // visual-only (stage 7)
+     fog: new Uint8Array(COLS * ROWS),       // 0 = never seen, 1 = currently visible, 2 = explored
+     blocked: new Uint8Array(COLS * ROWS),
+     selection: [],
+     placing: null,   // { type: 'farm' | 'barracks' } while in placement mode
+     drag: null,      // { x0,y0,x1,y1 } while box-selecting (world coords)
+     over: null,      // 'victory' | 'defeat'
+     time: 0,
+     mouse: { x: 0, y: 0, inside: false },   // canvas (viewport) coordinates
+     cam: { x: 0, y: 0 }, // viewport top-left in world coordinates
+     ai: null,
+     seed: s,
+     trees: map.trees,
+     terrainTiles: map.terrain
+   };
+   // mountains and water block movement (buildings mark blocked too)
+   for (let i = 0; i < COLS * ROWS; i++) if (map.terrain[i]) g.blocked[i] = 1;
+   g.factions.player = new Faction(g, 'player', PLAYER_TC_TILE);
+   const styles = pickStyles(s); // deterministic per-seed roll for AI bases
+   for (const o of AI_OWNERS) {
+     g.factions[o] = new Faction(g, o, BASE_TILES[OWNERS.indexOf(o)]);
+     g.factions[o].style = styles[o];
+   }
+   // eight gold mines scattered across the map (seeded, 2 per base)
+   for (const [tx, ty] of map.mines) g.mines.push(new Mine(tx, ty));
+   g.aiList = AI_OWNERS.map(o => new AIController(g.factions[o], g.factions[o].style));
+   g.terrain = buildTerrain(g); // pre-render the static world (seeded, deterministic)
+   // start the camera centred on the player's Town Center
+   g.cam.x = g.factions.player.tc.x - VIEW_W / 2;
+   g.cam.y = g.factions.player.tc.y - VIEW_H / 2;
+   clampCam(g);
+   return g;
+ }
+ // keep the viewport inside the world
+ function clampCam(g) {
+   g.cam.x = Math.max(0, Math.min(W - VIEW_W, g.cam.x));
+   g.cam.y = Math.max(0, Math.min(H - VIEW_H, g.cam.y));
+ }
+ // pan the camera by held keys (arrows / WASD), or automatically when the
+ // mouse cursor sits within EDGE_MARGIN of the viewport edge
+ const KEYS = new Set();
+ const PAN_KEYS = new Set(['arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'w', 'a', 's', 'd']);
+ const EDGE_MARGIN = 24; // px from the canvas edge that triggers auto-pan
+ function panCamera(dt) {
+   let dx = 0, dy = 0;
+   if (KEYS.has('arrowleft') || KEYS.has('a')) dx -= 1;
+   if (KEYS.has('arrowright') || KEYS.has('d')) dx += 1;
+   if (KEYS.has('arrowup') || KEYS.has('w')) dy -= 1;
+   if (KEYS.has('arrowdown') || KEYS.has('s')) dy += 1;
+   if (game.mouse.inside) {
+     // game.mouse is stored in canvas (viewport) coordinates, so a stationary
+     // cursor keeps the same lx/ly even while the camera is panning
+     const lx = game.mouse.x, ly = game.mouse.y;
+     if (lx < EDGE_MARGIN || lx > VIEW_W - EDGE_MARGIN ||
+         ly < EDGE_MARGIN || ly > VIEW_H - EDGE_MARGIN) {
+       // edge of the screen takes precedence over the keyboard
+       dx = (lx > VIEW_W - EDGE_MARGIN) ? 1 : (lx < EDGE_MARGIN ? -1 : 0);
+       dy = (ly > VIEW_H - EDGE_MARGIN) ? 1 : (ly < EDGE_MARGIN ? -1 : 0);
+     }
+   }
+   if (dx || dy) {
+     game.cam.x += dx * PAN_SPEED * dt;
+     game.cam.y += dy * PAN_SPEED * dt;
+     clampCam(game);
+   }
+ }
+ let game = newGame();
+
+ /* ============================================================
+  * 8. FOG OF WAR
+  * ============================================================ */
+ function updateFog() {
+   const fresh = new Uint8Array(COLS * ROWS);
+   const pf = game.factions.player;
+   const sources = [...pf.units, ...pf.buildings];
+   const r2 = SIGHT_RADIUS * SIGHT_RADIUS;
+   for (const s of sources) {
+     const x0 = Math.max(0, ((s.x - SIGHT_RADIUS) / TILE) | 0);
+     const x1 = Math.min(COLS - 1, ((s.x + SIGHT_RADIUS) / TILE) | 0);
+     const y0 = Math.max(0, ((s.y - SIGHT_RADIUS) / TILE) | 0);
+     const y1 = Math.min(ROWS - 1, ((s.y + SIGHT_RADIUS) / TILE) | 0);
+     for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) {
+       const dx = tx * TILE + TILE / 2 - s.x, dy = ty * TILE + TILE / 2 - s.y;
+       if (dx * dx + dy * dy <= r2) fresh[tx + ty * COLS] = 1;
+     }
+   }
+   for (let i = 0; i < COLS * ROWS; i++) {
+     if (fresh[i]) game.fog[i] = 1;          // currently visible
+     else if (game.fog[i] === 1) game.fog[i] = 2; // was visible -> keep explored (dark)
+   }
+ }
+
+ /* ============================================================
+  * 9. COMBAT / PROJECTILE / HOUSEKEEPING UPDATES
+  * ============================================================ */
+ function updateProjectiles(dt) {
+   for (const p of game.projectiles) {
+     if (p.done) continue;
+     const dx = p.tx - p.x, dy = p.ty - p.y, d = Math.hypot(dx, dy);
+     const s = p.speed * dt;
+     if (d <= s) {
+       p.done = true;
+       if (p.kind === 'catapult') {
+         game.impacts.push({ x: p.tx, y: p.ty, r: p.splash, life: 0.35 });
+         spawnPuff(p.tx, p.ty, 9, '#ffb04a', 90);
+         game.shake = 5; // subtle screen shake on impact
+         SFX.impact();
+       }
+       if (p.btarget && !p.btarget.dead) {
+         p.btarget.hp -= p.dmg;
+         p.btarget.flash = 0.15;
+         if (p.btarget.hp <= 0) { p.btarget.dead = true; spawnPuff(p.btarget.x, p.btarget.y, 9, '#9aa0a6', 70); }
+       }
+       for (const u of game.units) {
+         if (u.dead || u.owner === p.owner) continue;
+         if (dist(u.x, u.y, p.tx, p.ty) <= p.splash + UNIT_R) {
+           u.hp -= p.dmg;
+           u.flash = 0.15;
+           if (u.hp <= 0) { u.dead = true; spawnPuff(u.x, u.y, 5, '#b03028', 55); }
+         }
+       }
+     } else {
+       p.x += dx / d * s; p.y += dy / d * s;
+       p.spin = (p.spin || 0) + dt * 9;
+     }
+   }
+   game.projectiles = game.projectiles.filter(p => !p.done);
+ }
+
+ // gentle unit separation so armies do not stack into one pixel
+ function separate() {
+   const us = game.units, minD = UNIT_R * 2;
+   for (let i = 0; i < us.length; i++) {
+     const a = us[i];
+     for (let j = i + 1; j < us.length; j++) {
+       const b = us[j];
+       const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy);
+       if (d === 0 || d >= minD) continue;
+       const push = (minD - d) / 2, nx = dx / d, ny = dy / d;
+       const ax = a.x - nx * push, ay = a.y - ny * push;
+       const bx = b.x + nx * push, by = b.y + ny * push;
+       if (!game.blocked[Math.floor(ax / TILE) + Math.floor(ay / TILE) * COLS]) { a.x = ax; a.y = ay; }
+       if (!game.blocked[Math.floor(bx / TILE) + Math.floor(by / TILE) * COLS]) { b.x = bx; b.y = by; }
+       clampUnit(a); clampUnit(b);
+     }
+   }
+ }
+
+ function prune() {
+   game.units = game.units.filter(u => !u.dead);
+   for (const o of OWNERS) {
+     const f = game.factions[o];
+     f.units = f.units.filter(u => !u.dead);
+     for (const b of f.buildings) if (b.dead) clearBlocked(game, b);
+     f.buildings = f.buildings.filter(b => !b.dead);
+   }
+   game.buildings = game.buildings.filter(b => !b.dead);
+ }
+
+ function checkEnd() {
+   if (game.over) return;
+   if (game.factions.player.tc.dead) endGame('defeat');
+   else if (AI_OWNERS.every(o => game.factions[o].tc.dead)) endGame('victory');
+ }
+ function endGame(result) {
+   game.over = result;
+   el.overlayText.textContent = result === 'victory'
+     ? 'VICTORY \u2014 Every enemy Town Center has fallen!'
+     : 'DEFEAT \u2014 Your Town Center has fallen.';
+   el.overlay.classList.remove('hidden');
+   SFX[result === 'victory' ? 'victory' : 'defeat']();
+ }
+
+ function update(dt) {
+   game.time += dt;
+   updateFog();
+   for (const ai of game.aiList) ai.update(dt, game);
+   for (const u of game.units) u.update(dt, game);
+   for (const b of game.buildings) b.update(dt, game);
+   updateProjectiles(dt);
+   for (const im of game.impacts) im.life -= dt;
+   game.impacts = game.impacts.filter(im => im.life > 0);
+   // visual-only particles + screen shake (deterministic, never snapshotted)
+   for (const pt of game.particles) { pt.x += pt.vx * dt; pt.y += pt.vy * dt; pt.life -= dt; }
+   game.particles = game.particles.filter(pt => pt.life > 0);
+   game.shake = Math.max(0, game.shake - dt * 8);
+   separate();
+   const uBefore = game.units.length, bBefore = game.buildings.length;
+   prune();
+   if (game.units.length < uBefore) SFX.unitDie();
+   if (game.buildings.length < bBefore) SFX.buildingDie();
+   checkEnd();
+ }
+
+ /* ============================================================
+  * 10. SELECTION & COMMANDS (player input)
+  * ============================================================ */
+ function pointInRect(x, y, b) {
+   return x >= b.tx * TILE && x < (b.tx + b.w) * TILE && y >= b.ty * TILE && y < (b.ty + b.h) * TILE;
+ }
+ function pointSelect(x, y) {
+   const f = game.factions.player;
+   let hit = null;
+   for (const u of f.units) if (!u.dead && dist(u.x, u.y, x, y) <= UNIT_R + 5) { hit = u; break; }
+   if (!hit) for (const b of f.buildings) if (!b.dead && pointInRect(x, y, b)) { hit = b; break; }
+   game.selection = hit ? [hit] : [];
+   if (hit) SFX.select();
+ }
+ function boxSelect(x0, y0, x1, y1) {
+   const f = game.factions.player;
+   const ax = Math.min(x0, x1), ay = Math.min(y0, y1), bx = Math.max(x0, x1), by = Math.max(y0, y1);
+   const out = [];
+   for (const u of f.units) if (!u.dead && u.x >= ax && u.x <= bx && u.y >= ay && u.y <= by) out.push(u);
+   for (const b of f.buildings) if (!b.dead && b.x >= ax && b.x <= bx && b.y >= ay && b.y <= by) out.push(b);
+   game.selection = out;
+   if (out.length) SFX.select();
+ }
+ function selectAll() {
+   game.selection = game.factions.player.units.filter(u => !u.dead);
+   if (game.selection.length) SFX.select();
+ }
+ function issueCommand(x, y) {
+   const sel = game.selection.filter(e => !e.dead);
+   game.selection = sel;
+   if (sel.length === 0) {
+     // right-click on one of your own entities selects it (classic convenience)
+     const f = game.factions.player;
+     let hit = null;
+     for (const u of f.units) if (!u.dead && dist(u.x, u.y, x, y) <= UNIT_R + 5) { hit = u; break; }
+     if (!hit) for (const b of f.buildings) if (!b.dead && pointInRect(x, y, b)) { hit = b; break; }
+     if (hit) game.selection = [hit];
+     return;
+   }
+   const units = sel.filter(e => e.kind === 'unit');
+   const workers = units.filter(u => u.type === 'worker');
+   const combat = units.filter(u => u.type !== 'worker');
+   let eUnit = null, eB = null, eM = null;
+   for (const u of game.units) if (!u.dead && dist(u.x, u.y, x, y) <= UNIT_R + 6) { eUnit = u; break; }
+   for (const b of game.buildings) if (!b.dead && pointInRect(x, y, b)) { eB = b; break; }
+   for (const m of game.mines)
+     if (m.gold > 0 && x >= m.tx * TILE && x < (m.tx + 1) * TILE && y >= m.ty * TILE && y < (m.ty + 1) * TILE) { eM = m; break; }
+   let cmd = false;
+   if (eUnit && eUnit.owner !== 'player') {
+     for (const u of combat) u.setOrder({ type: 'attackUnit', target: eUnit }); cmd = true;
+   } else if (eUnit && eUnit.owner === 'player') {
+     for (const u of units) u.setOrder({ type: 'move', x: eUnit.x, y: eUnit.y }); cmd = true;
+   } else if (eB && eB.owner !== 'player') {
+     for (const u of combat) u.setOrder({ type: 'attackBuilding', target: eB }); cmd = true;
+   } else if (eM) {
+     for (const w of workers) w.setOrder({ type: 'gather', mine: eM });
+     for (const u of combat) u.setOrder({ type: 'move', x: eM.x, y: eM.y }); cmd = true;
+   } else {
+     for (const u of units) u.setOrder({ type: 'move', x, y }); cmd = true;
+   }
+   if (cmd) SFX.move();
+ }
+ function canTrain(f, b, type) {
+   if (!b || b.dead || !b.complete || b.training) return false;
+   const d = UNIT_DEFS[type];
+   return f.gold >= d.cost && f.supplyUsed() + d.supply <= f.supplyCap();
+ }
+ function playerTrain(b, type) {
+   const f = game.factions.player;
+   if (!canTrain(f, b, type)) return;
+   const d = UNIT_DEFS[type];
+   f.gold -= d.cost;
+   b.training = { type, left: d.trainTime, total: d.trainTime };
+ }
+ function validBuildSpot(tx, ty) {
+   if (tx < 0 || ty < 0 || tx >= COLS || ty >= ROWS) return false;
+   if (game.blocked[tx + ty * COLS]) return false;
+   if (mineAt(game, tx, ty)) return false;
+   return true;
+ }
+ function tryPlace() {
+   if (!game.placing) return;
+   const type = game.placing.type;
+   const f = game.factions.player;
+   const wx = game.mouse.x + game.cam.x, wy = game.mouse.y + game.cam.y;
+   const tx = Math.floor(wx / TILE), ty = Math.floor(wy / TILE);
+   if (validBuildSpot(tx, ty) && f.gold >= BUILDING_DEFS[type].cost) {
+     f.gold -= BUILDING_DEFS[type].cost;
+     const b = new Building(game, type, 'player', tx, ty);
+     f.buildings.push(b);
+     game.buildings.push(b);
+     markBlocked(game, b);
+     SFX.thud();
+   } else {
+     SFX.deny();
+   }
+   game.placing = null;
+ }
+
+ /* ============================================================
+  * 11. INPUT HANDLING
+  * ============================================================ */
+ const canvas = document.getElementById('game');
+ const ctx = canvas.getContext('2d');
+ function toScreen(e) {
+   const r = canvas.getBoundingClientRect();
+   return { x: e.clientX - r.left, y: e.clientY - r.top };
+ }
+ function toWorld(e) {
+   const s = toScreen(e);
+   return { x: s.x + game.cam.x, y: s.y + game.cam.y };
+ }
+ canvas.addEventListener('mousemove', e => {
+   const s = toScreen(e);
+   game.mouse.x = s.x; game.mouse.y = s.y; game.mouse.inside = true;
+ });
+ canvas.addEventListener('mouseleave', () => { game.mouse.inside = false; });
+ canvas.addEventListener('mousedown', e => {
+   const s = toScreen(e);
+   game.mouse.x = s.x; game.mouse.y = s.y; game.mouse.inside = true;
+   const p = toWorld(e);
+   if (e.button === 0) {
+     if (game.placing) { tryPlace(); return; }
+     game.drag = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+   } else if (e.button === 2) {
+     if (game.placing) { game.placing = null; return; }
+     issueCommand(p.x, p.y);
+   }
+ });
+ canvas.addEventListener('mouseup', e => {
+   if (e.button === 0 && game.drag) {
+     const p = toWorld(e);
+     if (Math.hypot(p.x - game.drag.x0, p.y - game.drag.y0) > 8)
+       boxSelect(game.drag.x0, game.drag.y0, p.x, p.y);
+     else pointSelect(p.x, p.y);
+     game.drag = null;
+   }
+ });
+ canvas.addEventListener('contextmenu', e => e.preventDefault());
+ document.addEventListener('keydown', e => {
+   if (e.key === 'Escape') game.placing = null;
+   if (e.key === ' ') { selectAll(); e.preventDefault(); }
+   if (PAN_KEYS.has(e.key.toLowerCase())) KEYS.add(e.key.toLowerCase());
+ });
+ document.addEventListener('keyup', e => {
+   if (PAN_KEYS.has(e.key.toLowerCase())) KEYS.delete(e.key.toLowerCase());
+ });
+
+ /* ============================================================
+  * 12. SIDEBAR UI
+  * ============================================================ */
+ const el = {
+   gold: document.getElementById('gold'),
+   supply: document.getElementById('supply'),
+   actions: document.getElementById('actions'),
+   status: document.getElementById('status'),
+   selinfo: document.getElementById('selinfo'),
+   overlay: document.getElementById('overlay'),
+   overlayText: document.getElementById('overlay-text'),
+   unitcounts: document.getElementById('unitcounts'),
+   enemyinfo: document.getElementById('enemyinfo'),
+   minimap: document.getElementById('minimap'),
+   save: document.getElementById('save'),
+   load: document.getElementById('load'),
+   savemsg: document.getElementById('savemsg'),
+   seedInput: document.getElementById('seed'),
+   rollmap: document.getElementById('rollmap'),
+   soundbtn: document.getElementById('soundbtn'),
+   aistyles: document.getElementById('aistyles'),
+   god: document.getElementById('god')
+ };
+ // God mode: visual-only fog bypass (never serialized; a fresh load starts with fog)
+ let godMode = false;
+ document.getElementById('restart').addEventListener('click', restart);
+ document.getElementById('again').addEventListener('click', restart);
+ function parseSeed() {
+   const s = el.seedInput.value.trim();
+   if (s === '') return DEFAULT_SEED;
+   const n = parseInt(s, 10);
+   return Number.isFinite(n) ? (n >>> 0) : DEFAULT_SEED;
+ }
+ function restart() {
+   game = newGame(parseSeed());
+   lastSig = '';
+   el.overlay.classList.add('hidden');
+ }
+
+ let lastSig = '';
+ function renderActions() {
+   const f = game.factions.player;
+   const sel = game.selection;
+   const selB = sel.filter(e => e.kind === 'building');
+   const anyComplete = selB.some(b => b.complete);
+   const hasTC = selB.some(b => b.type === 'towncenter');
+   const hasBarracks = selB.some(b => b.type === 'barracks');
+   const sig = sel.map(e => e.id).join(',') + '|' + game.placing + '|' + anyComplete;
+   if (sig !== lastSig) {
+     lastSig = sig;
+     el.actions.innerHTML = '';
+     const mk = (label, enabled, fn) => {
+       const b = document.createElement('button');
+       b.textContent = label;
+       b._enabled = enabled;
+       b.addEventListener('click', fn);
+       el.actions.appendChild(b);
+     };
+     if (game.placing) {
+       const d = document.createElement('div');
+       d.className = 'hint';
+       d.textContent = 'Place ' + BUILDING_DEFS[game.placing.type].name + ': click a highlighted tile (right-click / Esc to cancel).';
+       el.actions.appendChild(d);
+     } else if (!anyComplete) {
+       const d = document.createElement('div');
+       d.className = 'hint';
+       d.textContent = sel.length
+         ? 'Under construction \u2014 not usable yet.'
+         : 'Left-click a unit or building to select it. Drag to multi-select. Right-click to issue commands.';
+       el.actions.appendChild(d);
+     } else {
+       const tcB = selB.find(b => b.type === 'towncenter' && b.complete);
+       const brB = selB.find(b => b.type === 'barracks' && b.complete);
+       if (tcB) {
+         mk('Build Worker [' + UNIT_DEFS.worker.cost + 'g]',
+           () => canTrain(f, tcB, 'worker'),
+           () => playerTrain(tcB, 'worker'));
+       }
+       if (brB) {
+         for (const t of ['swordsman', 'archer', 'catapult']) {
+           mk('Train ' + UNIT_DEFS[t].name + ' [' + UNIT_DEFS[t].cost + 'g]',
+             () => canTrain(f, brB, t),
+             () => playerTrain(brB, t));
+         }
+       }
+       mk('Build Farm [' + BUILDING_DEFS.farm.cost + 'g]',
+         () => f.gold >= BUILDING_DEFS.farm.cost && f.farmCount() < MAX_FARMS,
+         () => { game.placing = { type: 'farm' }; });
+       mk('Build Barracks [' + BUILDING_DEFS.barracks.cost + 'g]',
+         () => f.gold >= BUILDING_DEFS.barracks.cost && !f.hasComplete('barracks'),
+         () => { game.placing = { type: 'barracks' }; });
+     }
+   }
+   // refresh affordability every frame
+   for (const b of el.actions.querySelectorAll('button')) b.disabled = !b._enabled();
+ }
+
+ function updateUI() {
+   const f = game.factions.player;
+   el.gold.textContent = Math.floor(f.gold);
+   el.supply.textContent = f.supplyUsed() + '/' + f.supplyCap();
+   game.selection = game.selection.filter(e => !e.dead);
+   // status: active training / construction
+   let status = '';
+   for (const b of f.buildings) {
+     if (b.training) {
+       status += 'Training ' + UNIT_DEFS[b.training.type].name + ' (' +
+         Math.floor(100 * (1 - b.training.left / b.training.total)) + '%)' + (status ? ' \u00b7 ' : '');
+     } else if (!b.complete) {
+       status += 'Building ' + BUILDING_DEFS[b.type].name + ' (' +
+         Math.floor(100 * (1 - b.buildLeft / BUILDING_DEFS[b.type].buildTime)) + '%)' + (status ? ' \u00b7 ' : '');
+     }
+   }
+   el.status.textContent = status;
+   // selection summary
+   const counts = {};
+   const parts = [];
+   for (const e of game.selection) {
+     if (e.kind === 'unit') counts[e.type] = (counts[e.type] || 0) + 1;
+     else parts.push(BUILDING_DEFS[e.type].name + ' (' + Math.max(0, Math.ceil(e.hp)) + '/' + e.maxHp + ')');
+   }
+   for (const t in counts) parts.push(counts[t] + '\u00d7 ' + UNIT_DEFS[t].name);
+   el.selinfo.textContent = game.selection.length ? 'Selected: ' + parts.join(', ') : '';
+   // unit counters: own army composition + how many enemies are currently visible
+   const cc = {};
+   for (const u of f.units) cc[u.type] = (cc[u.type] || 0) + 1;
+   el.unitcounts.textContent = 'Army: ' + (cc.worker || 0) + 'W ' +
+     (cc.swordsman || 0) + 'S ' + (cc.archer || 0) + 'A' +
+     ((cc.catapult || 0) ? ' ' + cc.catapult + 'C' : '');
+   let seen = 0;
+   for (const o of AI_OWNERS) for (const u of game.factions[o].units) {
+     const i = Math.floor(u.x / TILE) + Math.floor(u.y / TILE) * COLS;
+     if (game.fog[i] === 1) seen++;
+   }
+   el.enemyinfo.textContent = 'Enemy visible: ' + seen;
+   el.aistyles.textContent = AI_OWNERS.map(o => AI_LABELS[o] + ' ' + game.factions[o].style).join(' \u00b7 ');
+   renderActions();
+ }
+
+ /* ============================================================
+  * 13. RENDERING (canvas, tile-based fog of war)
+  * ============================================================ */
+ function hpBar(x, y, pct) {
+   ctx.fillStyle = '#3a0d0d';
+   ctx.fillRect(x - 15, y, 30, 5);
+   ctx.fillStyle = pct > 0.6 ? COLORS.hpGood : pct > 0.3 ? COLORS.hpMid : COLORS.hpLow;
+   ctx.fillRect(x - 15, y, Math.max(1, 30 * pct), 5);
+ }
+
+ // Deterministic burst of short-lived particles (visual only)
+ function spawnPuff(x, y, n, color, speed) {
+   for (let i = 0; i < n; i++) {
+     const a = (i / n) * Math.PI * 2 + x * 0.37 + y * 0.13;
+     const s = speed * (0.6 + 0.4 * (((i * 37 + Math.floor(x)) % 7) / 7));
+     game.particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.45, max: 0.45, color });
+   }
+ }
+
+ // Pre-render the static world once (grass, dirt, trees, mine rock piles,
+ // border) into an offscreen canvas. Seeded from the game seed, so it is
+ // deterministic and identical on reload.
+ function buildTerrain(g) {
+   const c = document.createElement('canvas');
+   c.width = W;
+   c.height = H;
+   const t = c.getContext('2d');
+   const rnd = mulberry32(((g.seed + 0x9e3779b9) ^ 0x24d2) >>> 0);
+   const grassShades = ['#47773a', '#4a7c3d', '#447237', '#4d8041'];
+   const ter = g.terrainTiles || new Uint8Array(COLS * ROWS);
+   for (let ty = 0; ty < ROWS; ty++) {
+     for (let tx = 0; tx < COLS; tx++) {
+       const kind = ter[tx + ty * COLS];
+       if (kind === 1) { // water: blue with a few ripple speckles
+         t.fillStyle = COLORS.water[(tx * 7 + ty * 13) % 3];
+         t.fillRect(tx * TILE, ty * TILE, TILE, TILE);
+         t.fillStyle = 'rgba(255,255,255,0.10)';
+         t.fillRect(tx * TILE + 3 + Math.floor(rnd() * 10), ty * TILE + 3 + Math.floor(rnd() * 14), 10, 2);
+         t.fillRect(tx * TILE + 6 + Math.floor(rnd() * 8), ty * TILE + 8 + Math.floor(rnd() * 9), 6, 2);
+         continue;
+       }
+       if (kind === 2) { // mountain: rocky outcrop with a highlight
+         t.fillStyle = COLORS.mountainBase;
+         t.fillRect(tx * TILE, ty * TILE, TILE, TILE);
+         const ox = (tx * 73 + ty * 19) % 4, oy = (tx * 13 + ty * 29) % 4;
+         const px = tx * TILE, py = ty * TILE;
+         t.fillStyle = COLORS.mountainRock;
+         t.beginPath(); t.arc(px + 10 + ox, py + 11 + oy, 10, 0, Math.PI * 2); t.fill();
+         t.fillStyle = COLORS.mountainLight;
+         t.beginPath(); t.arc(px + 9 + ox, py + 10 + oy, 8, 0, Math.PI * 2); t.fill();
+         t.fillStyle = COLORS.mountainHi;
+         t.beginPath(); t.arc(px + 7 + ox, py + 8 + oy, 4, 0, Math.PI * 2); t.fill();
+         t.fillStyle = COLORS.mountainBase;
+         t.beginPath(); t.arc(px + 17, py + 16, 3, 0, Math.PI * 2); t.fill();
+         t.beginPath(); t.arc(px + 3, py + 14, 3, 0, Math.PI * 2); t.fill();
+         continue;
+       }
+       t.fillStyle = grassShades[(tx * 7 + ty * 13) % 4];
+       t.fillRect(tx * TILE, ty * TILE, TILE, TILE);
+       const n = 2 + Math.floor(rnd() * 3); // subtle 2x2 speckles
+       for (let k = 0; k < n; k++) {
+         t.fillStyle = rnd() < 0.5 ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.07)';
+         t.fillRect(tx * TILE + Math.floor(rnd() * (TILE - 2)), ty * TILE + Math.floor(rnd() * (TILE - 2)), 4, 4);
+       }
+       // shoreline: bright rim where land meets water
+       t.fillStyle = COLORS.waterShore;
+       if (tx > 0 && ter[tx - 1 + ty * COLS] === 1) t.fillRect(tx * TILE, ty * TILE, 6, TILE);
+       if (tx < COLS - 1 && ter[tx + 1 + ty * COLS] === 1) t.fillRect((tx + 1) * TILE - 6, ty * TILE, 6, TILE);
+       if (ty > 0 && ter[tx + (ty - 1) * COLS] === 1) t.fillRect(tx * TILE, ty * TILE, TILE, 6);
+       if (ty < ROWS - 1 && ter[tx + (ty + 1) * COLS] === 1) t.fillRect(tx * TILE, (ty + 1) * TILE - 6, TILE, 6);
+     }
+   }
+   // dirt patches (deterministic; avoid tree / mine tiles)
+   for (let k = 0; k < 60; k++) {
+     const tx = Math.floor(rnd() * COLS), ty = Math.floor(rnd() * ROWS);
+     if (g.trees[tx + ty * COLS]) continue;
+     if (ter[tx + ty * COLS]) continue;
+     if (g.mines.some(m => m.tx === tx && m.ty === ty)) continue;
+     t.fillStyle = 'rgba(122,90,58,0.5)';
+     t.fillRect(tx * TILE + 4 + Math.floor(rnd() * 4), ty * TILE + 4 + Math.floor(rnd() * 4), 16, 12);
+     t.fillRect(tx * TILE + 6 + Math.floor(rnd() * 6), ty * TILE + 6 + Math.floor(rnd() * 6), 8, 6);
+   }
+   // mine rock piles (gold glints are drawn dynamically each frame)
+   for (const m of g.mines) {
+     const px = m.tx * TILE, py = m.ty * TILE;
+     t.fillStyle = '#5c6168';
+     t.beginPath(); t.arc(px + 10, py + 11, 13, 0, Math.PI * 2); t.fill();
+     t.fillStyle = '#787f87';
+     t.beginPath(); t.arc(px + 6, py + 7, 9, 0, Math.PI * 2); t.fill();
+     t.fillStyle = '#4a4f55';
+     t.beginPath(); t.arc(px + 15, py + 15, 6, 0, Math.PI * 2); t.fill();
+     t.fillStyle = '#8f959c';
+     t.beginPath(); t.arc(px + 9, py + 5, 4, 0, Math.PI * 2); t.fill();
+     t.fillStyle = '#4a4f55';
+     t.beginPath(); t.arc(px + 18, py + 8, 2, 0, Math.PI * 2); t.fill();
+     t.beginPath(); t.arc(px + 4, py + 16, 2, 0, Math.PI * 2); t.fill();
+   }
+   // trees: trunk + two-layer canopy with deterministic jitter
+   for (let ty = 0; ty < ROWS; ty++) for (let tx = 0; tx < COLS; tx++) {
+     if (!g.trees[tx + ty * COLS]) continue;
+     const ox = (tx * 73 + ty * 19) % 4, oy = (tx * 13 + ty * 29) % 4;
+     const px = tx * TILE, py = ty * TILE;
+     t.fillStyle = '#5a3a1e';
+     t.fillRect(px + 7 + ox, py + 11 + oy, 5, 9);
+     t.fillStyle = '#2c5a24';
+     t.beginPath(); t.arc(px + 8 + ox, py + 8 + oy, 10, 0, Math.PI * 2); t.fill();
+     t.fillStyle = '#3f7d33';
+     t.beginPath(); t.arc(px + 9 + ox, py + 6 + oy, 7, 0, Math.PI * 2); t.fill();
+     t.fillStyle = '#4f9440';
+     t.beginPath(); t.arc(px + 8 + ox, py + 5 + oy, 5, 0, Math.PI * 2); t.fill();
+     t.fillStyle = '#24501c';
+     t.beginPath(); t.arc(px + 5 + ox, py + 9 + oy, 2, 0, Math.PI * 2); t.fill();
+     t.beginPath(); t.arc(px + 11 + ox, py + 10 + oy, 2, 0, Math.PI * 2); t.fill();
+   }
+   // dark frame around the world edge
+   t.strokeStyle = 'rgba(0,0,0,0.6)';
+   t.lineWidth = 16;
+   t.strokeRect(8, 8, W - 16, H - 16);
+   return c;
+ }
+
+ // One unit: sprite blit with multi-frame walk, facing flip, damage flash,
+ // carried-gold coin, pulsing selection ring, health bar.
+ function drawUnit(u) {
+   const spr = SPRITES[u.type][u.owner];
+   const half = spr.idle.width / 2;
+   const top = u.y - spr.idle.height / 2;
+   // soft ellipse shadow (half = half the sprite width, ~12 for the 24 px units)
+   ctx.fillStyle = 'rgba(0,0,0,0.22)';
+   ctx.beginPath();
+   ctx.ellipse(u.x, u.y + 6, half * 0.85, half * 0.4, 0, 0, Math.PI * 2);
+   ctx.fill();
+   // pick frame: attack pose > walk cycle > idle
+   let frame = spr.idle;
+   if (u.attackAnim > 0 && spr.atk) frame = spr.atk;
+   else if (u.moving) frame = spr.walk[Math.floor(u.walkPhase) % u.walkFrames];
+   ctx.save();
+   if (u.facing === -1) { ctx.translate(u.x, 0); ctx.scale(-1, 1); ctx.translate(-u.x, 0); } // flip sprite
+   ctx.drawImage(frame, u.x - half, top);
+   if (u.flash > 0) {
+     ctx.globalAlpha = Math.min(0.75, (u.flash / 0.15) * 0.75);
+     ctx.drawImage(spr.white, u.x - half, top);
+     ctx.globalAlpha = 1;
+   }
+   ctx.restore();
+   if (u.carry > 0) { // carried gold coin over the shoulder
+     ctx.fillStyle = '#e8c34a';
+     ctx.beginPath(); ctx.arc(u.x + 7 * u.facing, u.y - 5, 4.5, 0, Math.PI * 2); ctx.fill();
+     ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+     ctx.stroke();
+   }
+   if (game.selection.includes(u)) { // pulsing selection ring
+     const pulse = 1 + Math.sin(game.time * 6) * 0.1;
+     ctx.strokeStyle = 'rgba(255,225,74,' + (0.65 + 0.3 * Math.sin(game.time * 6)).toFixed(2) + ')';
+     ctx.lineWidth = 3;
+     ctx.beginPath(); ctx.arc(u.x, u.y, (half + 5) * pulse, 0, Math.PI * 2); ctx.stroke();
+     ctx.lineWidth = 1;
+   }
+   if (u.hp < u.maxHp) hpBar(u.x, top - 6, u.hp / u.maxHp);
+ }
+
+ function render() {
+   ctx.fillStyle = '#000';
+   ctx.fillRect(0, 0, W, H);
+
+   // --- world-space view: offset everything by the camera ---
+   ctx.save();
+   ctx.translate(-game.cam.x, -game.cam.y);
+   // subtle screen shake on catapult impacts (deterministic, decays in update)
+   if (game.shake > 0.05)
+     ctx.translate(Math.sin(game.time * 53) * game.shake, Math.cos(game.time * 47) * game.shake);
+
+   // tile range actually inside the viewport (culling for terrain/fog loops)
+   const tx0 = Math.max(0, (game.cam.x / TILE) | 0);
+   const tx1 = Math.min(COLS - 1, Math.ceil((game.cam.x + VIEW_W) / TILE) - 1);
+   const ty0 = Math.max(0, (game.cam.y / TILE) | 0);
+   const ty1 = Math.min(ROWS - 1, Math.ceil((game.cam.y + VIEW_H) / TILE) - 1);
+   const god = godMode; // god mode: every tile counts as seen + visible
+
+   // --- terrain: pre-rendered world, one blit per frame ---
+   // Drawn at the world ORIGIN: the ctx.translate(-cam) above already applies
+   // the camera. Passing cam.x/cam.y as the blit destination double-offsets
+   // the terrain (frozen on screen + only the top-left quarter visible ->
+   // black bottom/right + wrong scroll speed).
+   ctx.drawImage(game.terrain, 0, 0);
+
+   // black out never-seen tiles
+   ctx.fillStyle = '#000';
+   for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) {
+     if (!god && game.fog[tx + ty * COLS] === 0) ctx.fillRect(tx * TILE, ty * TILE, TILE, TILE);
+   }
+
+   // --- gold mines: rock piles live in the terrain layer; glints are dynamic ---
+   for (const m of game.mines) {
+     const i = m.tx + m.ty * COLS;
+     if (!god && game.fog[i] === 0) continue;
+     const px = m.tx * TILE, py = m.ty * TILE;
+     if (m.gold > 0) {
+       const frac = m.gold / MINE_CAPACITY;
+       ctx.fillStyle = 'rgba(255,215,94,' + (0.35 + 0.65 * frac).toFixed(2) + ')';
+       ctx.fillRect(px + 5, py + 5, 4, 4);
+       ctx.fillRect(px + 14, py + 8, 4, 4);
+       if (frac > 0.25) ctx.fillRect(px + 10, py + 14, 4, 4);
+     } else {
+       ctx.fillStyle = 'rgba(0,0,0,0.35)';
+       ctx.beginPath(); ctx.arc(px + 10, py + 12, 8, 0, Math.PI * 2); ctx.fill();
+     }
+   }
+
+   // --- buildings: sprite blits with scaffolding, damage, flash, selection ---
+   for (const b of game.buildings) {
+     const ci = Math.floor(b.x / TILE) + Math.floor(b.y / TILE) * COLS;
+     if (!god && game.fog[ci] === 0) continue;
+     const def = BUILDING_DEFS[b.type];
+     const spr = BSPRITES[b.type][b.owner];
+     const x0 = b.x - spr.width / 2, y0 = b.y - spr.height / 2;
+     // drop shadow
+     ctx.fillStyle = 'rgba(0,0,0,0.25)';
+     ctx.fillRect(x0 + 5, y0 + 7, spr.width, spr.height);
+     if (!b.complete) ctx.globalAlpha = 0.55;
+     ctx.drawImage(spr, x0, y0);
+     ctx.globalAlpha = 1;
+     if (!b.complete) { // scaffolding + construction progress
+       ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+       ctx.setLineDash([8, 6]);
+       ctx.strokeRect(x0 + 1, y0 + 1, spr.width - 2, spr.height - 2);
+       ctx.setLineDash([]);
+       const pct = 1 - b.buildLeft / def.buildTime;
+       ctx.fillStyle = 'rgba(0,0,0,0.55)';
+       ctx.fillRect(x0 + 2, y0 + spr.height - 9, spr.width - 4, 6);
+       ctx.fillStyle = '#3fd44a';
+       ctx.fillRect(x0 + 2, y0 + spr.height - 9, (spr.width - 4) * pct, 6);
+     }
+     if (b.training) { // training progress
+       const pct = 1 - b.training.left / b.training.total;
+       ctx.fillStyle = 'rgba(0,0,0,0.55)';
+       ctx.fillRect(x0 + 2, y0 + 3, spr.width - 4, 6);
+       ctx.fillStyle = '#e8c34a';
+       ctx.fillRect(x0 + 2, y0 + 3, (spr.width - 4) * pct, 6);
+     }
+     if (b.hp < b.maxHp) { // damage: darken + cracks + health bar
+       ctx.fillStyle = 'rgba(0,0,0,' + (0.12 + 0.3 * (1 - b.hp / b.maxHp)).toFixed(2) + ')';
+       ctx.fillRect(x0, y0, spr.width, spr.height);
+       ctx.strokeStyle = 'rgba(25,18,12,0.8)';
+       ctx.lineWidth = 2;
+       ctx.beginPath();
+       ctx.moveTo(x0 + 4, y0 + spr.height * 0.25);
+       ctx.lineTo(x0 + spr.width * 0.42, y0 + spr.height * 0.52);
+       ctx.lineTo(x0 + spr.width * 0.3, y0 + spr.height * 0.8);
+       ctx.stroke();
+       ctx.beginPath();
+       ctx.moveTo(x0 + spr.width - 4, y0 + spr.height * 0.35);
+       ctx.lineTo(x0 + spr.width * 0.58, y0 + spr.height * 0.62);
+       ctx.stroke();
+       ctx.lineWidth = 1;
+       hpBar(b.x, y0 - 8, b.hp / b.maxHp);
+     }
+     if (b.flash > 0) {
+       ctx.globalAlpha = Math.min(0.7, (b.flash / 0.15) * 0.7);
+       ctx.fillStyle = '#fff';
+       ctx.fillRect(x0, y0, spr.width, spr.height);
+       ctx.globalAlpha = 1;
+     }
+     if (game.selection.includes(b)) { // pulsing selection outline
+       const pulse = 1 + Math.sin(game.time * 6) * 0.05;
+       ctx.strokeStyle = 'rgba(255,225,74,' + (0.65 + 0.3 * Math.sin(game.time * 6)).toFixed(2) + ')';
+       ctx.lineWidth = 2;
+       ctx.strokeRect(x0 - 1.5 * pulse, y0 - 1.5 * pulse, (spr.width + 3) * pulse, (spr.height + 3) * pulse);
+       ctx.lineWidth = 1;
+     }
+   }
+
+   // --- units (own units stay visible in explored areas; enemy units are hidden there) ---
+   for (const u of game.units) {
+     const i = Math.floor(u.x / TILE) + Math.floor(u.y / TILE) * COLS;
+     const fog = god ? 1 : game.fog[i];
+     if (fog === 0) continue;
+     if (fog === 2 && u.owner !== 'player') continue;
+     drawUnit(u);
+   }
+
+   // --- projectiles: arrows with heads, spinning rocks with a short trail ---
+   for (const p of game.projectiles) {
+     const i = Math.floor(p.x / TILE) + Math.floor(p.y / TILE) * COLS;
+     if (!god && game.fog[i] !== 1) continue;
+     const ang = Math.atan2(p.ty - p.y, p.tx - p.x);
+     if (p.kind === 'archer') {
+       ctx.strokeStyle = '#d8d2c0';
+       ctx.lineWidth = 2;
+       ctx.beginPath();
+       ctx.moveTo(p.x - Math.cos(ang) * 14, p.y - Math.sin(ang) * 14);
+       ctx.lineTo(p.x, p.y);
+       ctx.stroke();
+       ctx.fillStyle = '#f0ead8';
+       ctx.beginPath();
+       ctx.moveTo(p.x + Math.cos(ang) * 6, p.y + Math.sin(ang) * 6);
+       ctx.lineTo(p.x - Math.cos(ang + 2.3) * 6, p.y - Math.sin(ang + 2.3) * 6);
+       ctx.lineTo(p.x - Math.cos(ang - 2.3) * 6, p.y - Math.sin(ang - 2.3) * 6);
+       ctx.closePath();
+       ctx.fill();
+       ctx.lineWidth = 1;
+     } else {
+       ctx.fillStyle = 'rgba(85,90,99,0.35)';
+       ctx.beginPath();
+       ctx.arc(p.x - Math.cos(ang) * 18, p.y - Math.sin(ang) * 18, p.r + 2, 0, Math.PI * 2);
+       ctx.fill();
+       ctx.save();
+       ctx.translate(p.x, p.y);
+       ctx.rotate(p.spin || 0);
+       ctx.fillStyle = p.color;
+       ctx.beginPath();
+       ctx.ellipse(0, 0, p.r + 4, p.r + 2, 0, 0, Math.PI * 2);
+       ctx.fill();
+       ctx.restore();
+     }
+   }
+   // --- impact rings (catapult splash telegraph) ---
+   for (const im of game.impacts) {
+     const i = Math.floor(im.x / TILE) + Math.floor(im.y / TILE) * COLS;
+     if (!god && game.fog[i] !== 1) continue;
+     const k = 1 - im.life / 0.35;
+     ctx.strokeStyle = 'rgba(255,170,60,' + Math.max(0, Math.min(1, im.life / 0.35)).toFixed(2) + ')';
+     ctx.lineWidth = 3;
+     ctx.beginPath();
+     ctx.arc(im.x, im.y, im.r * (0.7 + 0.3 * k), 0, Math.PI * 2);
+     ctx.stroke();
+     ctx.lineWidth = 1;
+   }
+   // --- impact / death particles ---
+   for (const pt of game.particles) {
+     const i = Math.floor(pt.x / TILE) + Math.floor(pt.y / TILE) * COLS;
+     if (!god && game.fog[i] !== 1) continue;
+     ctx.globalAlpha = Math.max(0, pt.life / pt.max);
+     ctx.fillStyle = pt.color;
+     ctx.fillRect(pt.x - 3, pt.y - 3, 6, 6);
+     ctx.globalAlpha = 1;
+   }
+
+   // --- fog of war: darken explored-but-out-of-sight tiles ---
+   for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) {
+     const i = tx + ty * COLS;
+     if (!god && game.fog[i] === 2) {
+       ctx.fillStyle = 'rgba(0,0,0,0.55)';
+       ctx.fillRect(tx * TILE, ty * TILE, TILE, TILE);
+     }
+   }
+
+   // --- building placement preview ---
+   if (game.placing && game.mouse.inside) {
+     const wx = game.mouse.x + game.cam.x, wy = game.mouse.y + game.cam.y;
+     const tx = Math.floor(wx / TILE), ty = Math.floor(wy / TILE);
+     const d = BUILDING_DEFS[game.placing.type];
+     const ok = validBuildSpot(tx, ty) && game.factions.player.gold >= d.cost;
+     ctx.globalAlpha = 0.35;
+     ctx.fillStyle = ok ? '#3fd44a' : '#d43f3f';
+     ctx.fillRect(tx * TILE, ty * TILE, d.w * TILE, d.h * TILE);
+     ctx.globalAlpha = 1;
+     ctx.strokeStyle = ok ? '#3fd44a' : '#d43f3f';
+     ctx.lineWidth = 1.5;
+     ctx.strokeRect(tx * TILE + 1, ty * TILE + 1, d.w * TILE - 2, d.h * TILE - 2);
+     ctx.lineWidth = 1;
+   }
+
+   // --- box-select rectangle (while dragging) ---
+   if (game.drag) {
+     // box follows the live cursor position (canvas coords + current cam)
+     const wx = game.mouse.x + game.cam.x, wy = game.mouse.y + game.cam.y;
+     const ax = Math.min(game.drag.x0, wx), ay = Math.min(game.drag.y0, wy);
+     const bx = Math.max(game.drag.x0, wx), by = Math.max(game.drag.y0, wy);
+     ctx.fillStyle = 'rgba(255,225,74,0.12)';
+     ctx.fillRect(ax, ay, bx - ax, by - ay);
+     ctx.strokeStyle = 'rgba(255,225,74,0.9)';
+     ctx.lineWidth = 1;
+     ctx.strokeRect(ax, ay, bx - ax, by - ay);
+   }
+
+   ctx.restore(); // end world-space view
+ }
+
+ /* ============================================================
+  * 15. EXTRAS (stage 5): SOUND, MINIMAP, UNIT COUNTERS,
+  *     SAVE/LOAD MID-GAME (seeded map gen lives in section 7)
+  * ============================================================ */
+
+ // --- Tiny WebAudio SFX engine (lazy; browsers only allow sound after a
+ // --- user gesture, so it stays silent until the first click) ---
+ const SFX = {
+   enabled: true,
+   ctx: null,
+   ensure() {
+     if (typeof window === 'undefined') return null; // headless
+     const AC = window.AudioContext || window.webkitAudioContext;
+     if (!AC) return null;
+     if (!this.ctx) this.ctx = new AC();
+     if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+     return this.ctx;
+   },
+   tone(freq, dur, type, vol, delay, slideTo) {
+     if (!this.enabled) return;
+     const ctx = this.ensure(); if (!ctx) return;
+     if (!type) type = 'sine';
+     if (vol === undefined) vol = 0.12;
+     if (delay === undefined) delay = 0;
+     const t0 = ctx.currentTime + delay;
+     const o = ctx.createOscillator(), g = ctx.createGain();
+     o.type = type;
+     o.frequency.setValueAtTime(Math.max(1, freq), t0);
+     if (slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(1, slideTo), t0 + dur);
+     g.gain.setValueAtTime(0.0001, t0);
+     g.gain.exponentialRampToValueAtTime(vol, t0 + 0.008);
+     g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+     o.connect(g); g.connect(ctx.destination);
+     o.start(t0); o.stop(t0 + dur + 0.05);
+   },
+   noise(dur, vol, delay, cutoff) {
+     if (!this.enabled) return;
+     const ctx = this.ensure(); if (!ctx) return;
+     if (vol === undefined) vol = 0.15;
+     if (delay === undefined) delay = 0;
+     const t0 = ctx.currentTime + delay;
+     const len = Math.max(1, Math.floor(ctx.sampleRate * dur));
+     const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+     const d = buf.getChannelData(0);
+     for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+     const src = ctx.createBufferSource(); src.buffer = buf;
+     const f = ctx.createBiquadFilter(); f.type = 'lowpass';
+     f.frequency.value = cutoff || 700;
+     const g = ctx.createGain();
+     g.gain.setValueAtTime(vol, t0);
+     g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+     src.connect(f); f.connect(g); g.connect(ctx.destination);
+     src.start(t0);
+   },
+   select()      { this.tone(520, 0.05, 'square', 0.05); },
+   deny()        { this.tone(150, 0.12, 'square', 0.07); },
+   move()        { this.tone(300, 0.09, 'sine', 0.05, 0, 160); },
+   thud()        { this.tone(200, 0.10, 'sine', 0.09, 0, 90); },
+   coin()        { this.tone(1250, 0.05, 'sine', 0.05); this.tone(1700, 0.06, 'sine', 0.04, 0.05); },
+   shot(kind)    { if (kind === 'catapult') this.tone(150, 0.25, 'sawtooth', 0.10, 0, 60);
+                   else this.tone(950, 0.04, 'square', 0.04); },
+   impact()      { this.noise(0.30, 0.25, 0, 420); },
+   unitDie()     { this.noise(0.12, 0.10, 0, 600); this.tone(220, 0.10, 'sine', 0.07, 0, 90); },
+   buildingDie() { this.noise(0.5, 0.28, 0, 300); },
+   trainDone()   { this.tone(660, 0.09, 'triangle', 0.11); this.tone(880, 0.12, 'triangle', 0.11, 0.09); },
+   buildDone()   { this.tone(392, 0.10, 'triangle', 0.11); this.tone(523, 0.14, 'triangle', 0.11, 0.10); },
+   victory()     { [523, 659, 784, 1047].forEach((f, i) => this.tone(f, 0.18, 'triangle', 0.13, i * 0.15)); },
+   defeat()      { [392, 330, 262, 196].forEach((f, i) => this.tone(f, 0.22, 'triangle', 0.13, i * 0.18)); }
+ };
+
+ // --- Minimap (strategic view; click to move the camera there) ---
+ const mm = el.minimap;
+ const mctx = mm.getContext('2d');
+ function renderMinimap() {
+   const god = godMode; // god mode: every tile counts as seen + visible
+   const sx = mm.width / W, sy = mm.height / H;
+   mctx.fillStyle = '#000';
+   mctx.fillRect(0, 0, mm.width, mm.height);
+   for (let ty = 0; ty < ROWS; ty++) for (let tx = 0; tx < COLS; tx++) {
+     const i = tx + ty * COLS;
+     const fog = god ? 1 : game.fog[i];
+     if (fog === 0) continue;
+     const kind = game.terrainTiles[tx + ty * COLS];
+     mctx.fillStyle = kind === 1 ? '#2d5f8a'
+       : kind === 2 ? '#6b7078'
+       : (fog === 1 ? '#3d6331' : '#22351f');
+     mctx.fillRect(tx * TILE * sx, ty * TILE * sy, Math.ceil(TILE * sx), Math.ceil(TILE * sy));
+   }
+   for (const m of game.mines) {
+     const i = m.tx + m.ty * COLS;
+     if (!god && game.fog[i] === 0) continue;
+     mctx.fillStyle = m.gold > 0 ? COLORS.mine : COLORS.mineEmpty;
+     mctx.fillRect(m.tx * TILE * sx, m.ty * TILE * sy, Math.ceil(TILE * sx), Math.ceil(TILE * sy));
+   }
+   for (const b of game.buildings) {
+     const ci = Math.floor(b.x / TILE) + Math.floor(b.y / TILE) * COLS;
+     if (!god && game.fog[ci] === 0) continue;
+     mctx.fillStyle = COLORS[b.owner];
+     mctx.fillRect(b.tx * TILE * sx, b.ty * TILE * sy, Math.ceil(b.w * TILE * sx), Math.ceil(b.h * TILE * sy));
+   }
+   for (const u of game.units) {
+     const i = Math.floor(u.x / TILE) + Math.floor(u.y / TILE) * COLS;
+     const fog = god ? 1 : game.fog[i];
+     if (fog === 0) continue;
+     if (fog === 2 && u.owner !== 'player') continue; // same fog rules as the main view
+     mctx.fillStyle = COLORS[u.owner];
+     mctx.beginPath();
+     mctx.arc(u.x * sx, u.y * sy, 1.6, 0, Math.PI * 2);
+     mctx.fill();
+   }
+   mctx.strokeStyle = '#2a3340';
+   mctx.strokeRect(0.5, 0.5, mm.width - 1, mm.height - 1);
+ }
+ mm.addEventListener('mousedown', e => {
+   e.preventDefault();
+   const r = mm.getBoundingClientRect();
+   const wx = (e.clientX - r.left) * (W / mm.width);
+   const wy = (e.clientY - r.top) * (H / mm.height);
+   // center the camera on the clicked world position
+   game.cam.x = wx - VIEW_W / 2;
+   game.cam.y = wy - VIEW_H / 2;
+   clampCam(game);
+ });
+ mm.addEventListener('contextmenu', e => e.preventDefault());
+
+ // --- Save / load mid-game (localStorage; silently no-ops without one) ---
+ const SAVE_KEY = 'warcraft_save_v2';
+ const store = (typeof localStorage !== 'undefined') ? localStorage : null;
+ function saveMsg(text) { el.savemsg.textContent = text; }
+ function fmtTime(t) {
+   const m = Math.floor(t / 60), s = Math.floor(t % 60);
+   return m + ':' + (s < 10 ? '0' : '') + s;
+ }
+ function serializeGame(g) {
+   const fac = (f) => ({
+     gold: f.gold, style: f.style || 'balanced',
+     tc: f.tc ? f.tc.id : null,
+     units: f.units.map(u => ({
+       id: u.id, type: u.type, x: u.x, y: u.y, hp: u.hp,
+       atkCd: u.atkCd, carry: u.carry, path: u.path, fallback: u.fallback, repath: u.repath,
+       order: {
+         type: u.order.type,
+         x: u.order.x !== undefined ? u.order.x : null,
+         y: u.order.y !== undefined ? u.order.y : null,
+         mine: u.order.mine ? u.order.mine.id : null,
+         target: u.order.target ? u.order.target.id : null
+       }
+     })),
+     buildings: f.buildings.map(b => ({
+       id: b.id, type: b.type, tx: b.tx, ty: b.ty, hp: b.hp,
+       complete: b.complete, buildLeft: b.buildLeft,
+       training: b.training ? { type: b.training.type, left: b.training.left, total: b.training.total } : null
+     }))
+   });
+   const factions = {};
+   for (const o of OWNERS) factions[o] = fac(g.factions[o]);
+   const ai = {};
+   for (const aiC of g.aiList)
+     ai[aiC.f.owner] = { state: aiC.state, decision: aiC.decision, reattack: aiC.reattack, alternate: aiC.alternate, cmd: aiC.cmd };
+   return {
+     v: 2, seed: g.seed, time: g.time, over: g.over,
+     fog: Array.from(g.fog), blocked: Array.from(g.blocked),
+     mines: g.mines.map(m => ({ id: m.id, tx: m.tx, ty: m.ty, gold: m.gold })),
+     factions,
+     ai,
+     selection: g.selection.map(e => e.id),
+     placing: g.placing
+   };
+ }
+ function deserializeGame(data) {
+   const map = genMap(data.seed); // trees + terrain derive from the seed
+   const g = {
+     factions: {}, units: [], buildings: [], mines: [], projectiles: [], impacts: [],
+     fog: new Uint8Array(data.fog), blocked: new Uint8Array(data.blocked),
+     selection: [], placing: data.placing || null, drag: null,
+     over: data.over, time: data.time,
+     mouse: { x: 0, y: 0, inside: false },
+     seed: data.seed, trees: map.trees, terrainTiles: map.terrain,
+     aiList: []
+   };
+   const uById = {}, bById = {}, mById = {};
+   for (const md of data.mines) {
+     const m = new Mine(md.tx, md.ty);
+     m.id = md.id; m.gold = md.gold;
+     g.mines.push(m); mById[m.id] = m;
+   }
+   for (const owner of OWNERS) {
+     const fd = data.factions[owner];
+     const f = new Faction(g, owner, [0, 0], true); // no starting entities
+     f.gold = fd.gold;
+     f.style = fd.style || 'balanced';
+     for (const bd of fd.buildings) {
+       const b = new Building(g, bd.type, owner, bd.tx, bd.ty);
+       b.id = bd.id; b.hp = bd.hp; b.complete = bd.complete;
+       b.buildLeft = bd.buildLeft; b.training = bd.training;
+       f.buildings.push(b); g.buildings.push(b); bById[b.id] = b;
+     }
+     for (const ud of fd.units) {
+       const u = new Unit(g, ud.type, owner, ud.x, ud.y);
+       u.id = ud.id; u.hp = ud.hp; u.atkCd = ud.atkCd; u.carry = ud.carry;
+       u.path = ud.path || []; u.fallback = ud.fallback; u.repath = ud.repath;
+       u.order = { type: ud.order.type };
+       u._sOrder = ud.order; // kept for the reference-remap pass below
+       f.units.push(u); g.units.push(u); uById[u.id] = u;
+     }
+     g.factions[owner] = f;
+   }
+   // remap cross-references: orders may point at mines / units / buildings
+   for (const u of g.units) {
+     const so = u._sOrder;
+     if (so.mine && mById[so.mine]) u.order.mine = mById[so.mine];
+     if (so.target) {
+       const t = uById[so.target] || bById[so.target];
+       if (t) u.order.target = t;
+     }
+     if (so.x !== null && so.x !== undefined) { u.order.x = so.x; u.order.y = so.y; }
+     delete u._sOrder;
+   }
+   for (const owner of OWNERS) {
+     const tid = data.factions[owner].tc;
+     g.factions[owner].tc = tid ? bById[tid] : null;
+   }
+   g.aiList = AI_OWNERS.map(owner => {
+     const ad = data.ai[owner] || {};
+     const ai = new AIController(g.factions[owner], g.factions[owner].style);
+     ai.state = ad.state || 'develop';
+     ai.decision = ad.decision || 0;
+     ai.reattack = ad.reattack || 0;
+     ai.alternate = ad.alternate || false;
+     ai.cmd = typeof ad.cmd === 'number' ? ad.cmd : 0;
+     return ai;
+   });
+   for (const id of data.selection || []) {
+     const e = uById[id] || bById[id];
+     if (e) g.selection.push(e);
+   }
+   // keep id allocation consistent for future spawns
+   let maxId = 0;
+   for (const u of g.units) maxId = Math.max(maxId, u.id);
+   for (const b of g.buildings) maxId = Math.max(maxId, b.id);
+   for (const m of g.mines) maxId = Math.max(maxId, m.id);
+   nextId = maxId + 1;
+   g.particles = []; g.shake = 0;
+   g.terrain = buildTerrain(g); // rebuild the static world from the loaded seed
+   return g;
+ }
+ function saveGame() {
+   if (!store) { saveMsg('save unavailable here (no localStorage)'); return; }
+   if (game.over) { saveMsg('game over \u2014 start a new game first'); return; }
+   try {
+     store.setItem(SAVE_KEY, JSON.stringify(serializeGame(game)));
+     saveMsg('Saved (' + fmtTime(game.time) + ', seed ' + game.seed + ')');
+   } catch (e) { saveMsg('save failed: ' + e.message); }
+ }
+ function loadGame() {
+   if (!store) { saveMsg('save unavailable here (no localStorage)'); return; }
+   const raw = store.getItem(SAVE_KEY);
+   if (!raw) { saveMsg('no saved game found'); return; }
+   try {
+     const data = JSON.parse(raw);
+     if (!data || data.v !== 2) throw new Error('unrecognized save version');
+     game = deserializeGame(data);
+     lastSig = '';
+     el.overlay.classList.add('hidden');
+     saveMsg('Loaded (time ' + fmtTime(game.time) + ', seed ' + game.seed + ')');
+   } catch (e) { saveMsg('load failed: ' + e.message); }
+ }
+ el.save.addEventListener('click', saveGame);
+ el.load.addEventListener('click', loadGame);
+ el.rollmap.addEventListener('click', () => {
+   // Math.random is UI-only (picking a seed); gameplay stays deterministic per seed
+   el.seedInput.value = String(((Math.random() * 0x7fffffff) | 0) >>> 0);
+   restart();
+ });
+ el.soundbtn.addEventListener('click', () => {
+   SFX.enabled = !SFX.enabled;
+   el.soundbtn.textContent = 'Sound: ' + (SFX.enabled ? 'on' : 'off');
+ });
+ el.god.addEventListener('change', () => { godMode = el.god.checked; });
+
+ /* ============================================================
+  * 14. MAIN GAME LOOP
+  * ============================================================ */
+ let lastT = performance.now();
+ function frame(now) {
+   let dt = (now - lastT) / 1000;
+   lastT = now;
+   if (dt > 0.1) dt = 0.1; // clamp tab-switch spikes so the sim does not teleport
+   panCamera(dt);          // keyboard + edge panning (works even after game-over)
+   if (!game.over) update(dt);
+   render();
+   renderMinimap();
+   updateUI();
+   requestAnimationFrame(frame);
+ }
+ requestAnimationFrame(frame);
+ </script>
+ </body>
+ </html>
